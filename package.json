@@ -1,6 +1,6 @@
 {
   "name": "paseo-plugin-account-switcher",
-  "version": "0.3.4",
+  "version": "0.6.0",
   "type": "module",
   "license": "MIT",
   "author": "dutchakdev",
@@ -13,13 +13,18 @@
   ],
   "keywords": [
     "paseo",
+    "paseo-plugin",
     "plugin",
     "claude",
+    "claude-code",
     "codex",
+    "chatgpt",
     "accounts",
-    "quotas"
+    "multi-account",
+    "quotas",
+    "usage-limits"
   ],
-  "description": "Per-agent Claude and Codex accounts with account-wide quota monitoring",
+  "description": "Use several Claude and ChatGPT/Codex subscription accounts in Paseo: choose one per agent, switch a chat to another account, and see every account's limits",
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run --config tests/vitest.config.ts",
@@ -57,7 +62,9 @@
   "files": [
     "paseo-plugin.json",
     "npm-shrinkwrap.json",
+    "assets/icon.png",
     "OVERVIEW.md",
+    "OVERVIEW.*.md",
     "index.client.tsx",
     "index.server.ts",
     "client/",

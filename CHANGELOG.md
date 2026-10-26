@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.6.0 - 2026-10-26
+
+### Added
+
+- The plugin directory shows the plugin icon on the listing. The manifest declares it as `assets/icon.png`, moved from `docs/assets/`, and the package check fails when the tarball lacks the icon the manifest names.
+
+### Changed
+
+- Requires Paseo 0.11 or newer, on the daemon and in the app. Paseo 0.8 to 0.10 and the 0.11.0 betas refuse a manifest with an `icon` field. Those versions can stay on 0.5.0: `paseo plugin install dutchakdev/paseo-plugin-account-switcher --ref v0.5.0`.
+
+## 0.5.0 - 2026-10-26
+
+### Added
+
+- A Simplified Chinese overview, which the Paseo plugin directory shows to readers who choose Chinese.
+- A plugin icon for listings, in `docs/assets/icon.png`.
+- Before **Apply** on a Codex chat, the switcher warns when the selected account's plan does not offer the agent's model, which would make the next message fail with `model_not_found`, and lists the models that plan offers. The plugin reads each Codex account's models together with its limits.
+
+### Fixed
+
+- A Claude account left idle no longer shows **Sign in again** while its sign-in is confirmed. Its access token had expired with no Claude session to renew it, so the limits request was refused. Before a limits check, the plugin now lets the official CLI renew an expired token with `claude -p /usage --no-session-persistence`, at most every 10 minutes per account; it sends no model message and saves no session.
+
+### Changed
+
+- The package description names what the plugin does, which the plugin directory shows as its summary. The overview also lists the monthly credit and spend limits added in 0.4.0, and says that a failed switch restores the previous account.
+
+## 0.4.0 - 2026-10-24
+
+### Added
+
+- Codex accounts on usage-based workspace plans, such as `enterprise_cbp_usage_based`, show their monthly credit allowance as a limit, for example "75% left" and "3,765 of 5,000 credits left".
+- Claude enterprise seats show their monthly spend allowance as a limit, for example "Monthly spend" with "$487.50 of $500.00 left".
+
 ## 0.3.4 - 2026-10-22
 
 ### Changed

@@ -1,3 +1,5 @@
+<img src="assets/icon.png" width="88" align="right" alt="">
+
 # Account Switcher for Paseo
 
 [![CI](https://github.com/dutchakdev/paseo-plugin-account-switcher/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/dutchakdev/paseo-plugin-account-switcher/actions/workflows/ci.yml) [![npm](https://img.shields.io/npm/v/paseo-plugin-account-switcher)](https://www.npmjs.com/package/paseo-plugin-account-switcher)
@@ -16,7 +18,7 @@ Listed in the [Paseo plugin directory](https://paseo.sh/plugins/dutchakdev/accou
 
 ## Requirements
 
-- **Paseo 0.8.x through 0.13.x**, including beta releases, on a **macOS or Linux** daemon and on the connected client.
+- **Paseo 0.11.x through 0.13.x**, including beta releases after 0.11.0, on a **macOS or Linux** daemon and on the connected client.
 - **Node.js 22.12.0 or newer**, with npm.
 - The official **Paseo** CLI and at least one of **Claude Code** or **Codex** available to the daemon. A provider whose CLI is missing is skipped; after installing it, reload the plugin and select **Enable** in its section.
 - Claude or ChatGPT subscription authentication. API keys and custom authentication/provider overrides are unsupported.
@@ -33,16 +35,16 @@ On Paseo 0.11.0 or a later release, including 0.12 and 0.13, install the reviewe
 paseo plugin add dutchakdev/account-switcher
 ```
 
-On Paseo 0.9 and 0.10, and on the 0.11.0 betas, install from npm. On 0.11 and later, npm also gets a new version before the directory approves it:
+npm gets a new version before the directory approves it:
 
 ```sh
 paseo plugin install npm:paseo-plugin-account-switcher
 ```
 
-On Paseo 0.8, install from GitHub. Paseo then runs the manifest's dependency and build steps on the daemon:
+Paseo 0.8 to 0.10 and the 0.11.0 betas refuse the manifest's `icon` field. They can stay on 0.5.0, the last release for them, installed from GitHub. Paseo then runs the manifest's dependency and build steps on the daemon:
 
 ```sh
-paseo plugin install dutchakdev/paseo-plugin-account-switcher
+paseo plugin install dutchakdev/paseo-plugin-account-switcher --ref v0.5.0
 ```
 
 To review or change the source first, install a [local checkout](docs/installation.md#install-a-local-checkout).
@@ -91,11 +93,13 @@ You can select an account during a response, but it is **never applied automatic
 
 Apply reloads the agent through Paseo while preserving its native session ID. The plugin confirms the new account only after startup confirmation and successful reload. If a switch fails, it attempts to restore the previous account. **Account not confirmed** means the running account could not be established; select an account and apply again.
 
+Plans differ in the models they offer. A free ChatGPT plan, for example, refuses a model that only paid plans have, and the agent's next message fails with `model_not_found`. For Codex, the plugin reads each account's models with its limits; when the selected account's plan does not offer the agent's model, the dialog says so before **Apply** and lists the models it does offer. Claude does not report its models this way, so the dialog shows no such warning for Claude.
+
 Different agents can use different accounts in parallel. Avoid sending from another client during Apply: Paseo's native reload has no atomic lock against a concurrent message, which could be interrupted.
 
 ## Read limits
 
-Each account shows all reported limit windows, including zero usage. Measured windows show used and remaining percentages and a reset countdown. Expand details for exact local reset times, durations, fetch/check timestamps, and windows without data.
+Each account shows all reported limit windows, including zero usage. Measured windows show used and remaining percentages and a reset countdown. Codex usage-based workspace plans show their monthly credit allowance as a limit, with the credits left; Claude enterprise seats show their monthly spend allowance the same way. Expand details for exact local reset times, durations, fetch/check timestamps, and windows without data.
 
 - Checks run every **5 minutes** in the background and every **minute** while Accounts or the switcher is open.
 - **Refresh** requests new data for one account; the header refresh action covers all accounts. Provider retry delays still apply.
@@ -103,7 +107,7 @@ Each account shows all reported limit windows, including zero usage. Measured wi
 - Failed requests can retain the last confirmed values as **stale**. Required sign-in, errors, and freshness remain visible.
 - A passed reset time triggers a new check; it does not imply that usage is already zero.
 
-Monitoring sends no model messages. The official CLIs own authentication and token refresh; a native Codex limits request may refresh its token. See [monitor details](server/usage/README.md) for scheduling, identity verification, and cache behavior.
+Monitoring sends no model messages. The official CLIs own authentication and token refresh; a native Codex limits request may refresh its token. A Claude access token expires when no Claude session uses the account for several hours. Before a limits check finds it expired, the plugin runs `claude -p /usage --no-session-persistence` under that account, at most every 10 minutes. This local command lets the CLI renew the token, with no model message and no saved session. **Sign in again** appears only when the CLI cannot renew it. See [monitor details](server/usage/README.md) for scheduling, identity verification, and cache behavior.
 
 ## Update or remove
 
