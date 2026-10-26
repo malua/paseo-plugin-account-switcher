@@ -84,7 +84,7 @@ uses its effective credential home, including an empty override for the default.
 There is no global profile search. Only the OAuth usage GET endpoint is requested; no
 token refresh or inference request is sent by this module. An access token that
 expires within a minute, with a refresh token present, is handed to the official
-CLI first: `renewExpiredClaudeToken` runs `claude -p /usage --no-session-persistence`
+CLI first: `renewExpiredClaudeToken` runs `claude -p /usage --no-session-persistence --setting-sources user`
 under the account, a local command with no model turn and no saved session. The
 controller calls it before identity verification, at most every 10 minutes per account. Before HTTP, the actual selected token
 must still match the credential hash used to verify a known account identity.

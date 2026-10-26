@@ -89,10 +89,10 @@ describe("expired Claude access tokens", () => {
   const stored = (oauth: Record<string, unknown>) => async () => JSON.stringify({ claudeAiOauth: { accessToken: "fixture", ...oauth } });
   const system = { ...account, command: ["/bin/claude", "--flag"], env: { ...account.env, HOME: "/user" } };
   // An idle account's token expires without any CLI running; the usage endpoint then answers 401.
-  it("asks the account's own CLI to renew an expired token, without a model turn or a saved session", async () => {
+  it("asks the account's own CLI to renew an expired token, without a model turn, a saved session or project settings", async () => {
     const run = vi.fn(async () => {});
     await expect(renewExpiredClaudeToken(system, { platform: "linux", now: () => now, run, readFile: stored({ refreshToken: "r", expiresAt: now - 1 }) })).resolves.toBe(true);
-    expect(run).toHaveBeenCalledExactlyOnceWith(["/bin/claude", "--flag", "-p", "/usage", "--no-session-persistence"], system.env);
+    expect(run).toHaveBeenCalledExactlyOnceWith(["/bin/claude", "--flag", "-p", "/usage", "--no-session-persistence", "--setting-sources", "user"], system.env);
   });
   it("renews a token about to expire, since the usage request would race it", async () => {
     const run = vi.fn(async () => {});
