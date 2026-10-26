@@ -107,7 +107,7 @@ Each account shows all reported limit windows, including zero usage. Measured wi
 - Failed requests can retain the last confirmed values as **stale**. Required sign-in, errors, and freshness remain visible.
 - A passed reset time triggers a new check; it does not imply that usage is already zero.
 
-Monitoring sends no model messages. The official CLIs own authentication and token refresh; a native Codex limits request may refresh its token. A Claude access token expires when no Claude session uses the account for several hours. Before a limits check finds it expired, the plugin runs `claude -p /usage --no-session-persistence` under that account, at most every 10 minutes. This local command lets the CLI renew the token, with no model message and no saved session. **Sign in again** appears only when the CLI cannot renew it. See [monitor details](server/usage/README.md) for scheduling, identity verification, and cache behavior.
+Monitoring sends no model messages. The official CLIs own authentication and token refresh; a native Codex limits request may refresh its token. A Claude access token expires when no Claude session uses the account for several hours. Before a limits check finds it expired, the plugin runs `claude -p /usage --no-session-persistence --setting-sources user` under that account, at most every 10 minutes. This local command lets the CLI renew the token, with no model message and no saved session. **Sign in again** appears only when the CLI cannot renew it. See [monitor details](server/usage/README.md) for scheduling, identity verification, and cache behavior.
 
 ## Update or remove
 

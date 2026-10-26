@@ -65,7 +65,8 @@ export async function renewExpiredClaudeToken(account: QuotaAccount, dependencie
   if (typeof expiresAt !== "number" || !string(oauth?.refreshToken)) return false;
   if (expiresAt - RENEWAL_MARGIN > (dependencies.now ?? Date.now)()) return false;
   // `/usage` is a local command: it renews the token without a model turn, and nothing is saved to history.
-  await (dependencies.run ?? runCli)([...account.command, "-p", "/usage", "--no-session-persistence"], account.env).catch(() => {});
+  // User settings only: print mode skips workspace trust, so nothing configured in the working directory may apply.
+  await (dependencies.run ?? runCli)([...account.command, "-p", "/usage", "--no-session-persistence", "--setting-sources", "user"], account.env).catch(() => {});
   return true;
 }
 function runCli(command: string[], env: NodeJS.ProcessEnv): Promise<void> {
