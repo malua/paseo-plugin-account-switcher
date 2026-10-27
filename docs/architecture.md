@@ -2,7 +2,7 @@
 
 [Back to the README](../README.md)
 
-Account Switcher is an independent plugin for Paseo 0.11.x through 0.13.x, including beta releases after 0.11.0. It uses public plugin and provider APIs; no Paseo core patch is required.
+Account Switcher is an independent plugin for Paseo 0.11.x through 0.14.x, including beta releases after 0.11.0. It uses public plugin and provider APIs; no Paseo core patch is required.
 
 ```mermaid
 flowchart LR
@@ -47,7 +47,24 @@ An agent binding records its confirmed current account separately from its pendi
 
 The launcher chooses the assigned profile and writes a startup receipt containing the matching account and launch token. The controller confirms the switch only after reload succeeds and the receipt matches. Failure triggers an attempt to restore the previous profile. A failed rollback or interrupted switch leaves the account unconfirmed instead of displaying an assumed account.
 
-A provider default is assigned during interactive agent creation. Its binding starts unconfirmed until startup is observed. Existing agents keep their bindings. Archived agents retain theirs for resume; cleanup of deleted agents requires a complete, successful agent listing.
+A provider default is assigned during interactive agent creation, unless the cached limits prove it would fail and the registry's per-provider `fallback` is on (the default; registries from 0.6 read as on). With `fallback` off, only the default is tried. The `agent.create` hook stores the requested model in a private environment variable; Paseo passes that environment to the same agent's first `agent.session_open`, which has the agent ID, binds the agent and removes the variable before the CLI starts.
+
+```mermaid
+flowchart TD
+  A[agent.session_open, reason create] --> B{default set?}
+  B -- no --> Z[no binding: the CLI's own sign-in]
+  B -- yes --> C[launchOrder: cached limits + model]
+  C --> D{default exhausted, or plan lacks the model?}
+  D -- no --> E[default first, then spares by room]
+  D -- yes --> F[spares by room, unknown last, default last]
+  E --> G[probe sign-in in order]
+  F --> G
+  G --> H[bind the first ready account]
+```
+
+The choice and each applied switch are recorded as `account-note` plugin timeline rows (`shared/timeline.ts`). A creation note is held until `agent.created`, which Paseo emits after `agent.session_open` once the agent's timeline exists. Rows live in the daemon's in-memory timeline and do not survive a daemon restart; a host that refuses a row only logs it.
+
+Each limit window carries a `scope` from its parser: `account` for windows that stop every request (Claude `five_hour` and `seven_day`, Codex's main `rateLimits` bucket), `model` for a model's own limits, `spend` for extra paid usage. Exhausted means an account-scope window at 100% whose known reset time has not passed, which still holds for a stale reading because use within a window only grows until it resets; or a fresh Codex reading with `ordinaryUsageAllowed: false`. The plan's model list counts only from a fresh reading, and only for a model that at least one account lists. Room is the percent left in the tightest account-scope window still in effect. Only signed-in accounts without a sign-in in progress are spares. Its binding starts unconfirmed until startup is observed. Existing agents keep their bindings. Archived agents retain theirs for resume; cleanup of deleted agents requires a complete, successful agent listing.
 
 Native reload preserves the native session ID, but does not offer an atomic idle-and-reload operation. Concurrent messages from another client remain a race that callers must avoid. Real switching, compaction, child sessions, and rewind require live acceptance beyond synthetic tests.
 

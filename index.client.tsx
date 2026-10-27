@@ -1,7 +1,12 @@
 import type { PluginButtonIconProps, PluginClientContext, PluginSurfaceProps } from "@getpaseo/plugin/client";
 import { Icon, Modal } from "@getpaseo/plugin/client/react-native";
 import { useSyncExternalStore } from "react";
+import { applySwitch, listAccounts, listUsage, prepareSwitch } from "./shared/contracts";
+import { ACCOUNT_NOTE_KIND, ACCOUNT_NOTE_VERSION, AccountNoteSchema } from "./shared/timeline";
 import { AccountsSurface } from "./client/accounts";
+import { runAccountCommand } from "./client/command";
+import { AccountNoteRow } from "./client/note";
+import { supportedProvider } from "./client/format";
 import { createClientRuntime } from "./client/runtime";
 import { AgentSwitcher } from "./client/switcher";
 
@@ -32,5 +37,19 @@ export default function contribute(client: PluginClientContext) {
   const removeSidebar = client.addSidebarItem({ id: "accounts", title: "Accounts", icon: "Users", surface: "accounts" });
   const removeCommand = client.addCommandCenterItem({ id: "accounts", title: "Accounts and limits", icon: "Users", context: "global",
     keywords: ["accounts", "quota", "claude", "codex", "limits", "account"], onSelect: ({ openSurface }) => openSurface("accounts") });
-  return () => { runtime.stop(); removeCommand(); removeSidebar(); removeSurface(); };
+  const removeSlash = client.addSlashCommand({ name: "account", description: "Switch this chat's account, or open the account switcher",
+    argumentHint: "[account name | default]", context: "agent",
+    async onSubmit({ args, agent, rpc, paseo }) {
+      const target = { workspaceId: agent.workspaceId, agentId: agent.id };
+      await runAccountCommand(supportedProvider(agent.provider), agent.id, args, {
+        state: () => rpc(listAccounts, {}),
+        usage: async () => (await rpc(listUsage, {})).accounts,
+        agent: async () => (await paseo.agents.ref(agent.id).refresh())?.agent ?? null,
+        prepare: (accountId) => rpc(prepareSwitch, { agentId: agent.id, accountId }),
+        apply: (accountId) => rpc(applySwitch, { agentId: agent.id, accountId }),
+        openSwitcher: () => runtime.openSwitcher(target),
+      }).finally(runtime.refresh);
+    } });
+  const removeNote = client.addTimelineRenderer({ kind: ACCOUNT_NOTE_KIND, version: ACCOUNT_NOTE_VERSION, schema: AccountNoteSchema, Component: AccountNoteRow });
+  return () => { runtime.stop(); removeNote(); removeSlash(); removeCommand(); removeSidebar(); removeSurface(); };
 }

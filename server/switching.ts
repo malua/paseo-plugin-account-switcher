@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { BindingSchema, cliName, type Binding, type Provider } from "../shared/contracts";
+import { BindingSchema, cliName, type Binding, type Provider, type UsageSnapshot } from "../shared/contracts";
+import { defaultBlocker, launchOrder, type Blocker } from "./selection";
 import { AccountStore, accountFrom, type StoredBinding } from "./store";
 
 export interface SwitchDependencies {
@@ -9,6 +10,8 @@ export interface SwitchDependencies {
  inspect:(agentId:string)=>Promise<{provider:string;busy:boolean;archived:boolean}>;
  checkAccount:(accountId:string)=>Promise<{authStatus:string}>;
  reload:(agentId:string)=>Promise<void>;
+ /** Last known limits; read from the cache, so creating an agent never waits for a provider. */
+ usage?:()=>Promise<UsageSnapshot[]>;
  applying?:Set<string>;
  receiptTimeoutMs?:number;
 }
@@ -33,7 +36,8 @@ export class SwitchService {
    if(agent.provider!=="claude"&&agent.provider!=="codex")throw new Error("Only Claude and Codex are supported.");
    return BindingSchema.parse(await this.deps.store.prepare(agentId,agent.provider,accountId));
  }
- async apply(agentId:string):Promise<Binding>{
+ /** `expected` is the account the caller showed or named; another client's later selection must not be applied in its place. */
+ async apply(agentId:string,expected?:string):Promise<Binding>{
    if(this.applying.has(agentId))throw new Error("An account switch is already in progress.");
    this.applying.add(agentId);
    let previous:StoredBinding|undefined;
@@ -43,6 +47,7 @@ export class SwitchService {
      if(!state.integration.enabled)throw new Error("Enable account integration first.");
      const selected=state.bindings.find(b=>b.agentId===agentId);
      if(!selected?.pendingAccountId)throw new Error("Select an account first.");
+     if(expected&&selected.pendingAccountId!==expected)throw new Error("The account selection changed; try again.");
      const target=accountFrom(state,selected.pendingAccountId);
      // Without the launcher in its command, the provider would never confirm the new account.
      if(!state.integration.providers.includes(target.provider))throw new Error(`Account switching is off for ${cliName[target.provider]}. Enable integration again to include it.`);
@@ -73,19 +78,34 @@ export class SwitchService {
      throw error;
    } finally {this.applying.delete(agentId);}
  }
- async bindNewAgent(agentId:string,provider:Provider):Promise<void>{
+ /** Binds a new agent to the default account, or to the next usable one when provider data shows the default would fail. */
+ async bindNewAgent(agentId:string,provider:Provider,model:string|null=null):Promise<{accountId:string;defaultId:string;reason:Blocker|"sign-in"|"unverified"|null}|undefined>{
    const state=await this.deps.store.read();
    if(!state.integration.enabled||!state.integration.providers.includes(provider)||state.bindings.some(b=>b.agentId===agentId))return;
    const selected=state.defaults[provider];if(!selected)return;
    const account=accountFrom(state,selected);
    if(account.provider!==provider)throw new Error("The default account belongs to another provider.");
    if(account.loginToken)throw new Error("Default account sign-in is still in progress.");
-   if((await this.deps.checkAccount(selected)).authStatus!=="ready")throw new Error("The default account requires authentication. Sign in or select another default account.");
-   await this.deps.store.change(r=>{
+   const usage=await this.deps.usage?.().catch(()=>[])??[];
+   const evidence={defaultId:selected,accounts:state.accounts.filter(a=>a.provider===provider),usage,model,now:Date.now()};
+   let chosen:string|undefined,defaultStatus:string|undefined;
+   // With fallback off the default is binding, as before 0.7: the agent starts there or not at all.
+   for(const id of state.fallback[provider]?launchOrder(evidence):[selected]){
+     const {authStatus}=await this.deps.checkAccount(id);
+     if(id===selected)defaultStatus=authStatus;
+     if(authStatus==="ready"){chosen=id;break;}
+   }
+   if(!chosen)throw new Error("The default account requires authentication. Sign in or select another default account.");
+   // Only the official probe's `needs_auth` means sign-in; a timeout or an unknown answer is reported as unverified.
+   const reason=chosen===selected?null:defaultBlocker(evidence)??(defaultStatus==="needs_auth"?"sign-in":"unverified");
+   if(reason)console.log(`New agent ${agentId}: the default ${provider} account would fail (${reason}); starting on account ${chosen}.`);
+   const bound=await this.deps.store.change(r=>{
      if(!r.integration.enabled||!r.integration.providers.includes(provider)||r.bindings.some(b=>b.agentId===agentId))return;
-     const accountId=r.defaults[provider];if(accountId!==selected)throw new Error("The default account changed; create the agent again.");
-     if(accountFrom(r,accountId).loginToken)throw new Error("Default account sign-in is still in progress.");
-     r.bindings.push({agentId,provider,currentAccountId:null,pendingAccountId:null,launchAccountId:accountId,launchToken:randomUUID(),status:"ready",error:null,registrationObserved:false});
+     if(r.defaults[provider]!==selected)throw new Error("The default account changed; create the agent again.");
+     if(accountFrom(r,chosen).loginToken)throw new Error("Account sign-in is still in progress.");
+     r.bindings.push({agentId,provider,currentAccountId:null,pendingAccountId:null,launchAccountId:chosen,launchToken:randomUUID(),status:"ready",error:null,registrationObserved:false});
+     return true;
    });
+   return bound?{accountId:chosen,defaultId:selected,reason}:undefined;
  }
 }

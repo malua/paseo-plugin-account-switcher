@@ -6,11 +6,14 @@ Limits cover every window the provider reports, such as 5-hour and weekly use, w
 
 - Each account you add gets its own credential profile. Settings, skills, and session history stay shared with your existing CLI setup, so a profile is not a sandbox.
 - **Enable** in Accounts points Paseo's Claude and Codex commands at the plugin's launchers, which start the official CLI under the agent's account. **Disable** restores the original commands; use it before removing the plugin.
-- The account chip in the composer opens the switcher for that chat. Your selection applies only when you choose **Apply** while the agent is idle with no pending permission request, and Paseo reloads the agent with its session intact. If the switch fails, the plugin tries to restore the previous account.
+- A new agent starts on its provider's default account. When the latest readings show the default has used up an account-wide limit that resets later, Codex reports that ordinary usage is not allowed, its plan lacks the Codex model chosen for the agent, or the default needs sign-in, the agent starts on the signed-in account with the largest percentage left instead. Limits of a single model and extra paid usage do not count. With every account ruled out, it stays on the default. **Always use the default** under a provider in Accounts turns this off, so the default stays binding.
+- `/account name` in the message field switches the chat's account, or `/account default` its provider's default: at once when the agent is idle, otherwise in the switcher for **Apply**. The Command Center offers **Make “name” the default** for each signed-in account.
+- A line in the chat records applied switches, and why a new agent did not start on the default. These lines are best effort and do not survive a daemon restart.
+- The account chip in the composer opens the switcher for that chat. Your selection applies only when you choose **Apply**, or type `/account name`, while the agent is idle with no pending permission request, and Paseo reloads the agent with its session intact. If the switch fails, the plugin tries to restore the previous account.
 
 ## Setup
 
-- Paseo 0.11 to 0.13 on a macOS or Linux daemon, with Node.js 22.12 or newer.
+- Paseo 0.11 to 0.14 on a macOS or Linux daemon, with Node.js 22.12 or newer.
 - The official Paseo CLI and at least one of Claude Code or Codex on the daemon. A provider without its CLI shows as unavailable; after you install it, reload the plugin and select **Enable** in that provider's section.
 - A Claude or ChatGPT subscription for each account. API keys are not supported. Adding an account runs the official CLI sign-in from Paseo.
 

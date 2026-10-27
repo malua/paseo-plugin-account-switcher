@@ -19,7 +19,7 @@ const state: AccountState = {
     { id: "account-2", provider: "claude", source: "managed", label: "Team", authStatus: "ready", email: null, plan: null, createdAt: "2026-09-15" },
   ],
   bindings: [{ agentId: agent.id, provider: "claude", currentAccountId: "system-claude", pendingAccountId: "account-2", status: "ready", error: null }],
-  defaults: { claude: null, codex: null }, integration: { enabled: true, error: null }, providers: { claude: { available: true, integrated: true }, codex: { available: true, integrated: true } },
+  defaults: { claude: null, codex: null }, fallback: { claude: true, codex: true }, integration: { enabled: true, error: null }, providers: { claude: { available: true, integrated: true }, codex: { available: true, integrated: true } },
 };
 
 function harness(listResult: Promise<unknown> = Promise.resolve(page), accountState = state) {
@@ -28,6 +28,8 @@ function harness(listResult: Promise<unknown> = Promise.resolve(page), accountSt
   const update = vi.fn();
   const add = vi.fn((_contribution: PluginComposerPillContribution) => ({ update, remove }));
   const unsubscribe = vi.fn();
+  const removeItem = vi.fn();
+  const addItem = vi.fn((_item: { id: string; title: string }) => removeItem);
   const context = {
     paseo: { agents: {
       subscribe: vi.fn((callback: typeof listener) => { listener = callback; return unsubscribe; }),
@@ -35,8 +37,9 @@ function harness(listResult: Promise<unknown> = Promise.resolve(page), accountSt
     } },
     rpc: vi.fn(async (contract: { name: string }) => contract.name === "accounts.list" ? accountState : { accounts: [] }),
     addComposerPill: add,
+    addCommandCenterItem: addItem,
   } as unknown as PluginClientContext;
-  return { context, add, update, remove, unsubscribe, emit: (event: PaseoAgentUpdate) => listener(event) };
+  return { context, add, update, remove, unsubscribe, addItem, removeItem, emit: (event: PaseoAgentUpdate) => listener(event) };
 }
 
 afterEach(() => vi.useRealTimers());
@@ -167,5 +170,17 @@ describe("composer registration lifecycle", () => {
     await flush();
     expect(runtime.getError()).toContain("Host disconnected");
     runtime.stop();
+  });
+});
+
+describe("Command Center defaults", () => {
+  it("registers one entry per signed-in account that is not its provider's default, and removes them on stop", async () => {
+    const host = harness();
+    const runtime = createClientRuntime(host.context, () => null);
+    await flush();
+    const ready = state.accounts.filter((account) => account.authStatus === "ready");
+    expect(host.addItem.mock.calls.map(([item]) => item.id)).toEqual(ready.map((account) => `default-${account.id}`));
+    runtime.stop();
+    expect(host.removeItem).toHaveBeenCalledTimes(ready.length);
   });
 });
