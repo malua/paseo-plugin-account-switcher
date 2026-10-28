@@ -24,7 +24,7 @@ Account Switcher 让你在 Paseo 中使用多个 Claude 和 ChatGPT/Codex 订阅
 ## 读取和发送的内容
 
 - 插件读取每个账号已保存的登录信息：Codex 的 `auth.json`，以及 Claude 存放在 macOS 钥匙串或配置文件 `.credentials.json` 中的凭据。Codex 文件用于识别 ChatGPT 账号；Claude 访问令牌用于用量请求的认证，官方 CLI 报告当前登录的是哪个 Claude 账号。令牌只保留在守护进程上。Paseo 客户端会收到每个账号的邮箱、套餐和限制。
-- Claude 限制来自使用该账号访问令牌向 `api.anthropic.com` 发出的请求。当该令牌过期时（例如账号闲置），插件会以该账号运行 `claude -p /usage --no-session-persistence`，由官方 CLI 续期令牌，每 10 分钟最多一次。该命令不发送模型消息，也不保存会话。Codex 限制和套餐的模型列表来自官方 `codex app-server`，它会向 OpenAI 查询，并可能刷新账号令牌。限制检查不会发送任何模型消息。
+- Claude 限制来自使用该账号访问令牌向 `api.anthropic.com` 发出的请求。当该令牌过期时（例如账号闲置），插件会以该账号运行 `claude -p /usage --no-session-persistence --setting-sources user`，由官方 CLI 续期令牌，每 10 分钟最多一次。该命令不发送模型消息，也不保存会话。Codex 限制和套餐的模型列表来自官方 `codex app-server`，它会向 OpenAI 查询，并可能刷新账号令牌。限制检查不会发送任何模型消息。
 - 为在 Paseo 的 Usage 视图中列出账号，插件会以来源名称 Account Switcher 上报它已收集的限制数据，不会产生新的提供商请求。对于使用托管账号的智能体，插件会把该账号的配置文件目录加入智能体的会话环境，使 Paseo 的用量弹窗读取正确的账号。
 - 插件发给智能体的唯一消息是 **Continue.**，仅在通过限制行完成切换之后，或在失败回合之后自动切换完成时发送。
 - 限制每 5 分钟刷新一次；Accounts 或切换器打开时每分钟刷新一次。缺失的值显示为无数据，刷新失败时可能保留上次的值并标记为过期。
