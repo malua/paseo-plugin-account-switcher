@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from "vitest";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AccountStore } from "../server/store";
@@ -40,4 +40,31 @@ it("migrates only exact legacy system labels and preserves user labels and regis
  const migratedBytes = await readFile(join(root,"registry.json"),"utf8");
  await reopened.initialize(sourceHomes);
  expect(await readFile(join(root,"registry.json"),"utf8")).toBe(migratedBytes);
+});
+
+it("reads a 0.6 registry without a fallback choice as fallback on, and keeps a choice once made", async () => {
+ const root = await mkdtemp(join(tmpdir(), "account-fallback-migration-")); roots.push(root);
+ const sourceHomes = {claude:join(root,"claude"),codex:join(root,"codex")};
+ const store = new AccountStore(root); await store.initialize(sourceHomes);
+ const legacy = JSON.parse(await readFile(join(root,"registry.json"),"utf8"));
+ delete legacy.fallback;
+ await writeFile(join(root,"registry.json"), JSON.stringify(legacy));
+ expect((await store.read()).fallback).toEqual({claude:true,codex:true});
+ await store.change(state => { state.fallback.codex = false; });
+ expect((await new AccountStore(root).read()).fallback).toEqual({claude:true,codex:false});
+ expect((await store.snapshot()).fallback).toEqual({claude:true,codex:false});
+});
+
+it("reads a registry without an automatic failover choice as off for both providers, and keeps a choice once made", async () => {
+ const root = await mkdtemp(join(tmpdir(), "account-auto-failover-")); roots.push(root);
+ const sourceHomes = {claude:join(root,"claude"),codex:join(root,"codex")};
+ const store = new AccountStore(root); await store.initialize(sourceHomes);
+ const legacy = JSON.parse(await readFile(join(root,"registry.json"),"utf8"));
+ delete legacy.autoFailover;
+ await writeFile(join(root,"registry.json"), JSON.stringify(legacy));
+ expect((await store.read()).autoFailover).toEqual({claude:false,codex:false});
+ expect((await store.snapshot()).autoFailover).toEqual({claude:false,codex:false});
+ await store.change(state => { state.autoFailover.claude = true; });
+ expect((await new AccountStore(root).read()).autoFailover).toEqual({claude:true,codex:false});
+ expect((await store.snapshot()).autoFailover).toEqual({claude:true,codex:false});
 });
