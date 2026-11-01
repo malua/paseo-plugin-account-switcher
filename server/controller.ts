@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { promisify, stripVTControlCharacters } from "node:util";
 import { homedir } from "node:os";
 import { join, dirname, resolve } from "node:path";
 import { lstat, readFile, realpath, rm } from "node:fs/promises";
@@ -11,13 +11,24 @@ import { prepareProfile } from "./profiles";
 import { accountCommand, accountEnvironment, launchLogin, probeAccount, removeAccountCredentials } from "./auth";
 import { installIntegration, restoreIntegration, writeLaunchers, prepareRuntime, reconcileIntegration } from "./integration";
 import { SwitchRefusal, SwitchService } from "./switching";
-import { createUsageService, readCredentialVersion, type AccountReadOptions, type QuotaAccount } from "./usage";
+import { createUsageService, readCredentialVersion, usageChecksEnabled, type AccountReadOptions, type QuotaAccount } from "./usage";
 import { renewExpiredClaudeToken } from "./usage/claude";
 import { LoginSessions, type LoginDependencies } from "./login";
+import { receiptProcessRuns } from "./process-identity";
 
 const execFileAsync=promisify(execFile);
+// Paseo sets these for its own Node processes, this plugin's included, and removes them before it starts an outside
+// command. Inherited, ELECTRON_RUN_AS_NODE makes an Electron executable, such as a `paseo` link to the desktop app's
+// executable left by an older install, run as plain Node, which then fails to load "agent" as a script.
+const RUNTIME_ENV=["PASEO_NODE_ENV","PASEO_DESKTOP_MANAGED","PASEO_SUPERVISED","ELECTRON_RUN_AS_NODE","ELECTRON_NO_ATTACH_CONSOLE","ESBUILD_BINARY_PATH"];
+// PASEO_CLI names the desktop app's bundled CLI, for the daemon the app starts and for one started from the app's terminal,
+// which inherits it and can outlive the app. A standalone daemon finds `paseo` on PATH.
+function paseoCli(){const env={...process.env};for(const key of RUNTIME_ENV)delete env[key];return{command:process.env.PASEO_CLI?.trim()||"paseo",env};}
 // A revoked sign-in fails every renewal; this bounds how often it starts the CLI.
 const RENEWAL_INTERVAL=600000;
+// A new agent's binding is written before its CLI starts, and Paseo reports no failed creation. This covers the time until the
+// CLI reads the binding, where each plugin hook gets 30 seconds; from then on the launcher's receipt says whether that CLI still runs.
+const CREATION_WAIT=600000;
 // Agent statuses that show a launch got under way, for the receipt check: the Accounts list waits for a session that is
 // up. Failover also takes "error", which Paseo sets when a turn fails, before the plugin's turn_ended hook runs: the
 // launcher wrote the receipt when it started the CLI, so the receipt still names the account the agent started on.
@@ -46,7 +57,7 @@ export class AccountController {
    // A crash during reload must not leave an unconfirmed account marked applied.
    await this.store.change(state=>{for(const b of state.bindings){if(b.status==="switching"){b.currentAccountId=null;b.launchToken=null;b.status="error";b.error="The account switch was interrupted. Account not confirmed; apply the account again.";}}});
   });
-  this.usage=createUsageService({getAccounts:input=>this.quotaAccounts(input),cachePath:join(root,"usage-cache.json")});
+  this.usage=createUsageService({getAccounts:input=>this.quotaAccounts(input),cachePath:join(root,"usage-cache.json"),checksEnabled:()=>usageChecksEnabled(join(dirname(root),"config.json"))});
   void this.ready.then(()=>{if(!this.disposed)this.usage.start();}).catch(()=>{});
  }
  async ensureRuntime(paseo:PaseoApi){
@@ -106,15 +117,35 @@ export class AccountController {
    }
   }catch{return;}
   if(!complete)return;
+  // The list leaves agents out, those in background workspaces among them, so only Paseo's answer for the agent itself proves it is gone.
+  const now=Date.now(),gone=new Set<string>();
+  for(const binding of before.bindings){
+   if(existing.has(binding.agentId)||this.applying.has(binding.agentId)||binding.status==="switching")continue;
+   if(!binding.registrationObserved&&binding.currentAccountId===null&&!await this.creationOver(binding,now))continue;
+   const known=await paseo.agents.ref(binding.agentId).refresh().then(found=>!!found,()=>undefined);
+   if(known)existing.add(binding.agentId);else if(known===false)gone.add(binding.agentId);
+  }
   await this.store.change(r=>{
    r.bindings=r.bindings.filter(binding=>{
     if(existing.has(binding.agentId)){binding.registrationObserved=true;return true;}
     if(captured.get(binding.agentId)!==JSON.stringify(binding)||this.applying.has(binding.agentId)||binding.status==="switching")return true;
-    // session_open runs before native creation/registration. A default binding
-    // that has never appeared in Paseo is not proof of a deleted agent.
-    return !binding.registrationObserved&&binding.currentAccountId===null;
+    if(gone.has(binding.agentId))return false;
+    // session_open runs before native creation/registration, so a new agent's binding that has never appeared in Paseo
+    // may belong to a creation still under way. A binding from before 0.9 starts its wait here.
+    if(!binding.registrationObserved&&binding.currentAccountId===null)binding.boundAt??=new Date(now).toISOString();
+    return true;
    });
   });
+ }
+ /** Whether a new agent's creation can no longer use its profile: the wait is over and no CLI of its launch still runs.
+  * A profile that may be in use is not released, so anything unclear about the receipt keeps the binding. */
+ private async creationOver(binding:StoredBinding,now:number):Promise<boolean>{
+  if(!binding.boundAt||now-Date.parse(binding.boundAt)<CREATION_WAIT)return false;
+  let pid:unknown,at:unknown;
+  try{({pid,at}=JSON.parse(await readFile(join(this.store.root,"receipts",encodeURIComponent(binding.agentId)+".json"),"utf8")));}
+  catch(error){return (error as NodeJS.ErrnoException).code==="ENOENT";}
+  if(typeof pid!=="number"||!Number.isInteger(pid)||pid<=0)return false;
+  return !await receiptProcessRuns(pid,at);
  }
  async setDefault(provider:Provider,id:string|null){
   await this.ready;
@@ -333,15 +364,34 @@ export class AccountController {
    return{provider:a.provider,busy:a.status==="running"||a.status==="initializing"||!!a.activeTurn||a.pendingPermissions.length>0,archived:!!a.archivedAt};
   },reload:async(id)=>{
    await requireIntegration();
-   const config=JSON.parse(await readFile(join(dirname(this.store.root),"config.json"),"utf8"));
-   const listen=config.daemon?.listen;
-   if(typeof listen!=="string"||!listen)throw new SwitchRefusal("Could not identify the daemon for reload.");
-   const host=listen.replace(/^0\.0\.0\.0:/,"127.0.0.1:");
-   try{await execFileAsync("paseo",["agent","reload",id,"--json","--host",host],{timeout:120_000,maxBuffer:1024*1024,env:process.env});}
-   catch{throw new SwitchRefusal("The native agent reload failed. Check the agent status and try again.");}
+   const agent=paseo.agents.ref(id) as {reload?:()=>Promise<unknown>;commands?:()=>Promise<unknown>};
+   // From Paseo 0.14 the SDK sends the request the CLI would, with no process to start and no daemon address to find.
+   if(agent.reload){
+    try{await agent.reload();}
+    catch(error){
+     console.error(`Native reload of agent ${id} failed: ${stripVTControlCharacters(error instanceof Error?error.message:String(error)).replace(/\s+/g," ").trim().slice(0,500)||"no output"}`);
+     throw new SwitchRefusal("The native agent reload failed. Check the agent status and try again.");
+    }
+   }else{
+    const config=JSON.parse(await readFile(join(dirname(this.store.root),"config.json"),"utf8"));
+    const listen=config.daemon?.listen;
+    if(typeof listen!=="string"||!listen)throw new SwitchRefusal("Could not identify the daemon for reload.");
+    const host=listen.replace(/^0\.0\.0\.0:/,"127.0.0.1:");
+    const cli=paseoCli();let command=cli.command;
+    const reload=(file:string)=>execFileAsync(file,["agent","reload",id,"--json","--host",host],{timeout:120_000,maxBuffer:1024*1024,env:cli.env});
+    try{
+     // A CLI that could not start reloaded nothing, so `paseo` on PATH can still try. One that ran and failed is not repeated.
+     await reload(command).catch(error=>{const code=(error as {code?:unknown}).code;if(command==="paseo"||(code!=="ENOENT"&&code!=="EACCES"))throw error;command="paseo";return reload(command);});
+    }
+    catch(error){
+     // The chat gets the refusal; the cause, which can name local paths, goes only to the plugin log.
+     const {code,signal,stderr}=error as {code?:unknown;signal?:unknown;stderr?:unknown};
+     console.error(`Native reload of agent ${id} with ${command} failed (${signal?`signal ${signal}`:`code ${code}`}): ${stripVTControlCharacters(String(stderr??"")).replace(/\s+/g," ").trim().slice(0,500)||"no output"}`);
+     throw new SwitchRefusal("The native agent reload failed. Check the agent status and try again.");
+    }
+   }
    // Paseo 0.11 reloads into an idle session and spawns the CLI on first use; listing
    // commands starts it so the launcher can confirm the account. Older hosts already started it.
-   const agent=paseo.agents.ref(id) as {commands?:()=>Promise<unknown>};
    if(agent.commands)await agent.commands().catch(()=>{/* The receipt check reports a failed start. */});
   }});
   this.switches.set(paseo,service);return service;

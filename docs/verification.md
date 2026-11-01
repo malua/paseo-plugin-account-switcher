@@ -1,6 +1,6 @@
 # Verification
 
-Last checked: **2026-10-27**. These results describe observed checks, not a guarantee
+Last checked: **2026-11-01**. These results describe observed checks, not a guarantee
 that every provider version or account lifecycle has been validated.
 
 ## Automated checks
@@ -54,6 +54,68 @@ texts. Rebuilding from a different working directory produced identical output.
 The GitHub Actions workflow is configured for Node 22 on macOS and Linux.
 `actionlint` passed locally. A hosted Actions run remains separate from these
 local and SSH-based results.
+
+## Paseo 0.15 compatibility — 2026-11-01
+
+- The manifest now accepts `>=0.11.0`. Paseo **0.15.0-beta.1**'s own `assertPluginCompatibility` refused the previous range on the daemon and in the app, for 0.15.0-beta.1 and 0.15.0, and admits the new one. The SDK stays pinned at 0.11.4.
+- With the SDK swapped to 0.15.0-beta.1 in a scratch copy, typecheck and all tests passed.
+- On macOS, an isolated **0.15.0-beta.1** daemon with a temp home ran this plugin, machine-status, mermaid and secure-input from source, with a stand-in `codex` and no provider account:
+  - A switch applied through the SDK reload in about 250 ms, and the next CLI ran with the new account's `CODEX_HOME`. A cold `paseo --version` alone takes about 300 ms.
+  - A stand-in that could not answer the reload: Apply refused, the cause went to the plugin log, and the next CLI ran on the old account.
+  - A daemon restart in the middle of a turn: Paseo resumed the agent with `Resume working.`, its CLI ran on the switched account, and the binding stayed `ready`.
+  - **Check usage** turned off through `patchDaemonConfig`: Paseo wrote `daemon.usage.enabled: false` to `config.json`, `usage.list` reported `checksOff`, and turning it on again needed no reload.
+- The same run on an isolated **0.14.0** daemon passed the switch through the SDK reload. The CLI path, which Paseo before 0.14 still needs, is covered by automated tests only.
+- Not checked live: the Accounts notice in an app, a real provider's limit request while the setting is off (automated tests assert no request), and Paseo before 0.14.
+
+## An agent whose creation fails — 2026-10-31
+
+With an isolated Paseo **0.14.0** daemon and a stand-in `codex` made to exit 1 as `app-server`, after one working start had cached the model list:
+
+- A named account, and separately a default: the creation failed, no agent existed, and the binding stayed. Removing the account was refused at once and succeeded once the binding's time was 11 minutes old.
+- A binding without a time, as earlier releases wrote it: the first look gave it a time and still refused; removal succeeded once that time was 11 minutes old.
+- A working start with the same aged time: the binding stayed, confirmed by its receipt, and the account stayed protected.
+- A creation hung with its CLI alive, with the same aged time: removal was refused. Once that CLI was killed, removal succeeded.
+- An agent in a background workspace, which `paseo ls` and the plugin's list leave out: the binding stayed and was confirmed, and removal was refused. On the code before this fix, the first `accounts.list` dropped the binding and removal succeeded.
+- A receipt whose PID belonged to a live process started after the receipt was written, with the same aged time: removal succeeded.
+
+The time was moved by editing the registry, not by waiting. Signing in again after the wait, and a launcher finding its binding gone after preparing the profile, are covered by automated tests only.
+
+## Naming an account at creation — 2026-10-31
+
+On macOS, with an isolated Paseo **0.14.0** daemon and a stand-in `codex` that records its arguments
+and environment, the plugin loaded from source and `paseo run --env` created the agents. No provider
+account or model was involved, so this checks the path, not a real session.
+
+- A named account: the agent's own `codex app-server` ran with that account's `CODEX_HOME`, no CLI
+  call saw the variable, the timeline gained the `requested` note, and a reload kept the account.
+- Refused, with the reason in the CLI's error and no agent created: an unknown name, an agent of
+  another provider, and another account under **Always use the default**. In the last case no CLI
+  started.
+- **Always use the default** with the default named: the agent started on the default, with no note.
+- No variable: the agent started on the default, with no `CODEX_HOME` set.
+- The variable in `agents.providers.codex.env`: the agent stayed on the default, and the CLI saw the
+  variable.
+
+A refused `paseo run` leaves the empty workspace it created first. The Claude path is covered by unit
+tests only.
+
+## The CLI behind a native reload — 2026-10-30
+
+On macOS, with Paseo Desktop's bundled CLI and an isolated daemon, both **0.14.0-beta.1**,
+`AccountController.switcher().apply()` ran with the real `execFile` against a mock agent. Login,
+launchers and usage were stubbed, and `commands()` wrote the receipt, so this checks which CLI runs
+and what it reports, not a real switch.
+
+- The code before #44 refused with a link from PATH to the app's executable and
+  `ELECTRON_RUN_AS_NODE=1`. The same command by hand printed `Cannot find module '…/agent'`.
+- Applied now: that link with `PASEO_CLI` naming the bundled CLI; that link without `PASEO_CLI`,
+  through the app's own CLI handling; `paseo` on PATH; `PASEO_CLI` naming a missing file or one that
+  cannot run, with `paseo` on PATH.
+- Refused, with the cause in the log: an agent the daemon does not know (`AGENT_NOT_FOUND`), no CLI
+  anywhere (`code ENOENT`), the daemon down (`DAEMON_UNREACHABLE`).
+
+A real account switch with Claude or Codex under a desktop-managed daemon remains unchecked: the
+daemon on this machine is not desktop-managed.
 
 ## Development SDK 0.11.4, Paseo usage and failover — 2026-10-27
 

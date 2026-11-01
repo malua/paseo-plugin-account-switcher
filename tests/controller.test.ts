@@ -3,6 +3,7 @@ import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises
 import type { PathLike } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
 import type { PaseoApi } from "@getpaseo/client";
 
 const mocks = vi.hoisted(() => ({
@@ -10,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   prepareRuntime: vi.fn(), reconcileIntegration: vi.fn(), execFile: vi.fn(), renewExpiredClaudeToken: vi.fn(),
   failRemovePath: undefined as string | undefined,
   usage: {
+    checksEnabled: vi.fn(async () => true),
     start: vi.fn(), close: vi.fn(), invalidate: vi.fn(), refresh: vi.fn(), list: vi.fn(),
   },
 }));
@@ -286,13 +288,16 @@ function completeAgentPage(ids: string[], nextCursor: string | null = null) {
   return { entries: ids.map(id => ({ agent: { id, archivedAt: id.startsWith("archived") ? "2026-09-16T00:00:00Z" : null } })), pageInfo: { hasMore: nextCursor !== null, nextCursor, prevCursor: null } };
 }
 
+// Paseo answers null for an agent that is gone.
+const goneAgents = { ref: () => ({ refresh: async () => null }) };
+
 describe("deleted agent reconciliation", () => {
   it("protects the default before registration, then releases it after observed registration and deletion", async () => {
     const { controller, account } = await fixture();
     await controller.setDefault("codex", account.id);
     await controller.store.change(r => { r.integration.enabled = true; });
     await controller.switcher(paseo).bindNewAgent("creating-agent", "codex");
-    const host = { agents: { ...paseo.agents, list: async () => completeAgentPage([]) } } as unknown as PaseoApi;
+    const host = { agents: { ...paseo.agents, ...goneAgents, list: async () => completeAgentPage([]) } } as unknown as PaseoApi;
     await controller.snapshot(host);
     expect((await controller.store.read()).bindings[0]).toMatchObject({ agentId: "creating-agent", registrationObserved: false, launchAccountId: account.id });
     await expect(controller.remove(account.id, host)).rejects.toThrow(/used/);
@@ -301,13 +306,150 @@ describe("deleted agent reconciliation", () => {
     expect((await controller.store.read()).bindings).toEqual([]);
   });
 
+  describe("an agent that never appeared", () => {
+    const nobody = { agents: { ...paseo.agents, ...goneAgents, list: async () => completeAgentPage([]) } } as unknown as PaseoApi;
+    afterEach(() => { vi.useRealTimers(); });
+    // Past the wait for a creation that Paseo never reports as failed.
+    const tenMinutesLater = () => { vi.useFakeTimers({ toFake: ["Date"] }); vi.setSystemTime(Date.now() + 10 * 60_000 + 1); };
+    async function failedStart(requested: string | null = null) {
+      const { controller, account } = await fixture();
+      await controller.store.change(r => { r.integration.enabled = true; });
+      if (!requested) await controller.setDefault("codex", account.id);
+      await controller.switcher(paseo).bindNewAgent("failed-agent", "codex", null, requested);
+      await controller.setDefault("codex", null);
+      return { controller, account };
+    }
+
+    it("holds its account while the creation may still be under way", async () => {
+      const { controller, account } = await failedStart();
+      await expect(controller.remove(account.id, nobody)).rejects.toThrow(/used by an agent/);
+      expect((await controller.store.read()).bindings.map(b => b.agentId)).toEqual(["failed-agent"]);
+    });
+
+    it("releases its account for removal once the creation cannot still be under way", async () => {
+      const { controller, account } = await failedStart();
+      tenMinutesLater();
+      await controller.remove(account.id, nobody);
+      const state = await controller.store.read();
+      expect(state.bindings).toEqual([]);
+      expect(state.accounts.some(a => a.id === account.id)).toBe(false);
+    });
+
+    it("releases an account named at the creation the same way", async () => {
+      const { controller, account } = await failedStart("Managed");
+      expect((await controller.store.read()).bindings[0]).toMatchObject({ agentId: "failed-agent", launchAccountId: account.id });
+      tenMinutesLater();
+      await controller.remove(account.id, nobody);
+      expect((await controller.store.read()).bindings).toEqual([]);
+    });
+
+    it("releases its account for signing in again", async () => {
+      const { controller, account } = await failedStart();
+      await expect(controller.login(nobody, account.id)).rejects.toThrow(/Switch agents away/);
+      tenMinutesLater();
+      await expect(controller.login(nobody, account.id)).resolves.toMatchObject({ terminalId: "login-terminal" });
+    });
+
+    it("gives a binding from an earlier release, which has no time, the same wait", async () => {
+      const { controller, account } = await failedStart();
+      await controller.store.change(r => { delete r.bindings[0].boundAt; });
+      tenMinutesLater();
+      await expect(controller.remove(account.id, nobody)).rejects.toThrow(/used by an agent/);
+      vi.setSystemTime(Date.now() + 10 * 60_000 + 1);
+      await controller.remove(account.id, nobody);
+      expect((await controller.store.read()).bindings).toEqual([]);
+    });
+
+    it("keeps the binding of an agent that appeared after all", async () => {
+      const { controller, account } = await failedStart();
+      tenMinutesLater();
+      const appeared = { agents: { ...paseo.agents, list: async () => completeAgentPage(["failed-agent"]) } } as unknown as PaseoApi;
+      await expect(controller.remove(account.id, appeared)).rejects.toThrow(/used by an agent/);
+      expect((await controller.store.read()).bindings[0]).toMatchObject({ agentId: "failed-agent", registrationObserved: true });
+    });
+
+    // What the launcher writes as the CLI starts.
+    async function launched(controller: AccountController, content: string) {
+      await mkdir(join(controller.store.root, "receipts"), { recursive: true });
+      await writeFile(join(controller.store.root, "receipts", "failed-agent.json"), content);
+    }
+    const receiptOf = (pid: number) => JSON.stringify({ accountId: "any", launchToken: "any", pid, at: "2026-10-31T00:00:00Z" });
+
+    it("holds its account past the wait while the CLI of that launch still runs", async () => {
+      const { controller, account } = await failedStart();
+      await launched(controller, receiptOf(process.pid));
+      tenMinutesLater();
+      await expect(controller.remove(account.id, nobody)).rejects.toThrow(/used by an agent/);
+      expect((await controller.store.read()).bindings.map(b => b.agentId)).toEqual(["failed-agent"]);
+    });
+
+    it("releases its account once that CLI has exited", async () => {
+      const { controller, account } = await failedStart();
+      await launched(controller, receiptOf(spawnSync(process.execPath, ["-e", ""]).pid));
+      tenMinutesLater();
+      await controller.remove(account.id, nobody);
+      expect((await controller.store.read()).bindings).toEqual([]);
+    });
+
+    it("releases its account when the receipt's PID went to a later process", async () => {
+      const { controller, account } = await failedStart();
+      await launched(controller, receiptOf(process.pid));
+      mocks.execFile.mockImplementation((...args: unknown[]) => {
+        (args.at(-1) as (error: null, result: { stdout: string }) => void)(null, { stdout: "Sat Oct 31 20:04:51 2026\n" });
+      });
+      tenMinutesLater();
+      await controller.remove(account.id, nobody);
+      expect((await controller.store.read()).bindings).toEqual([]);
+    });
+
+    it.each([["cannot be read", "{"], ["names no process", JSON.stringify({ accountId: "any", launchToken: "any" })]])("holds its account when the launch receipt %s", async (_, content) => {
+      const { controller, account } = await failedStart();
+      await launched(controller, content);
+      tenMinutesLater();
+      await expect(controller.remove(account.id, nobody)).rejects.toThrow(/used by an agent/);
+    });
+
+    it("keeps the binding of an agent that the list leaves out and Paseo still knows", async () => {
+      const { controller, account } = await failedStart();
+      tenMinutesLater();
+      const background = { agents: { ...paseo.agents, list: async () => completeAgentPage([]) } } as unknown as PaseoApi;
+      await expect(controller.remove(account.id, background)).rejects.toThrow(/used by an agent/);
+      expect((await controller.store.read()).bindings[0]).toMatchObject({ agentId: "failed-agent", registrationObserved: true });
+    });
+
+    it("keeps the binding when the agent cannot be looked up", async () => {
+      const { controller, account } = await failedStart();
+      tenMinutesLater();
+      const unknown = { agents: { ...paseo.agents, list: async () => completeAgentPage([]), ref: () => ({ refresh: async () => { throw new Error("offline"); } }) } } as unknown as PaseoApi;
+      await expect(controller.remove(account.id, unknown)).rejects.toThrow(/used by an agent/);
+      expect((await controller.store.read()).bindings[0]).toMatchObject({ agentId: "failed-agent", registrationObserved: false });
+    });
+
+    it("keeps the binding when the agent list is incomplete", async () => {
+      const { controller, account } = await failedStart();
+      tenMinutesLater();
+      const offline = { agents: { ...paseo.agents, list: async () => { throw new Error("offline"); } } } as unknown as PaseoApi;
+      await expect(controller.remove(account.id, offline)).rejects.toThrow(/used by an agent/);
+      expect((await controller.store.read()).bindings.map(b => b.agentId)).toEqual(["failed-agent"]);
+    });
+  });
+
+  it("keeps the binding of a registered agent that the list leaves out", async () => {
+    const { controller, account } = await fixture();
+    await controller.store.prepare("background-agent", "codex", account.id);
+    await controller.store.change(r => { r.bindings[0].currentAccountId = account.id; r.bindings[0].registrationObserved = true; });
+    const background = { agents: { ...paseo.agents, list: async () => completeAgentPage([]) } } as unknown as PaseoApi;
+    await controller.snapshot(background);
+    expect((await controller.store.read()).bindings.map(b => b.agentId)).toEqual(["background-agent"]);
+  });
+
   it("releases deleted-agent bindings for login while retaining archived agents across every page", async () => {
     const { controller, account } = await fixture();
     await controller.store.prepare("deleted-agent", "codex", account.id);
     await controller.store.change(r => { r.bindings[0].currentAccountId = account.id; r.bindings[0].launchAccountId = account.id; });
     await controller.store.prepare("archived-agent", "codex", "system-codex");
     const list = vi.fn().mockResolvedValueOnce(completeAgentPage(["active-agent"], "second-page")).mockResolvedValueOnce(completeAgentPage(["archived-agent"]));
-    const host = { agents: { ...paseo.agents, list } } as unknown as PaseoApi;
+    const host = { agents: { ...paseo.agents, ...goneAgents, list } } as unknown as PaseoApi;
     await expect(controller.login(host, account.id)).resolves.toMatchObject({ terminalId: "login-terminal" });
     expect((await controller.store.read()).bindings.map(b => b.agentId)).toEqual(["archived-agent"]);
     expect(list).toHaveBeenNthCalledWith(1, { filter: { includeArchived: true }, page: { limit: 200 } });
@@ -317,7 +459,7 @@ describe("deleted agent reconciliation", () => {
   it("lets the removal RPC path clear a deleted binding but protects an archived binding", async () => {
     const { controller, account } = await fixture();
     await controller.store.prepare("deleted-agent", "codex", account.id);
-    const host = { agents: { ...paseo.agents, list: async () => completeAgentPage([]) } } as unknown as PaseoApi;
+    const host = { agents: { ...paseo.agents, ...goneAgents, list: async () => completeAgentPage([]) } } as unknown as PaseoApi;
     await controller.remove(account.id, host);
     expect((await controller.store.read()).accounts.some(a => a.id === account.id)).toBe(false);
     const archivedAccount = await controller.store.add("codex", "Archived owner");
@@ -342,7 +484,7 @@ describe("deleted agent reconciliation", () => {
     let finish!: (value: ReturnType<typeof completeAgentPage>) => void, started!: () => void;
     const entered = new Promise<void>(resolve => { started = resolve; });
     const list = vi.fn(() => { started(); return new Promise<ReturnType<typeof completeAgentPage>>(resolve => { finish = resolve; }); });
-    const snapshot = controller.snapshot({ agents: { ...paseo.agents, list } } as unknown as PaseoApi);
+    const snapshot = controller.snapshot({ agents: { ...paseo.agents, ...goneAgents, list } } as unknown as PaseoApi);
     await entered; await controller.store.prepare("new-agent", "codex", account.id); finish(completeAgentPage([])); await snapshot;
     expect((await controller.store.read()).bindings.map(b => b.agentId)).toEqual(["new-agent"]);
   });
@@ -529,22 +671,99 @@ describe("live integration reconciliation", () => {
 });
 
 describe("native reload", () => {
-  it("starts a lazily launched provider CLI so the switch can confirm its receipt", async () => {
+  // A Paseo terminal names the app's CLI in PASEO_CLI; each test here chooses the CLI itself.
+  beforeEach(() => { vi.stubEnv("PASEO_CLI", undefined); });
+  afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); });
+
+  async function lazyFixture(agentId: string) {
     const home = await newRoot(), controller = await start(join(home, "account-switcher"));
     await writeFile(join(home, "config.json"), JSON.stringify({ daemon: { listen: "0.0.0.0:6767" } }));
     const account = await controller.store.add("codex", "Managed"); await mkdir(account.home, { recursive: true });
     await controller.store.change(r => { r.integration.enabled = true; });
-    await controller.store.prepare("lazy-agent", "codex", account.id);
+    await controller.store.prepare(agentId, "codex", account.id);
     // Paseo 0.11 returns from reload before the CLI exists; only first use spawns the launcher.
     const commands = vi.fn(async () => {
       const binding = (await controller.store.read()).bindings[0];
       await mkdir(join(controller.store.root, "receipts"), { recursive: true });
-      await writeFile(join(controller.store.root, "receipts", "lazy-agent.json"), JSON.stringify({ accountId: binding.launchAccountId, launchToken: binding.launchToken }));
+      await writeFile(join(controller.store.root, "receipts", `${agentId}.json`), JSON.stringify({ accountId: binding.launchAccountId, launchToken: binding.launchToken }));
       return { commands: [] };
     });
     const lazy = { agents: { ref: () => ({ refresh: async () => ({ agent: { provider: "codex", status: "idle", activeTurn: null, pendingPermissions: [], archivedAt: null } }), commands }) } } as unknown as PaseoApi;
+    return { controller, account, commands, lazy };
+  }
+
+  it("starts a lazily launched provider CLI so the switch can confirm its receipt", async () => {
+    const { controller, account, commands, lazy } = await lazyFixture("lazy-agent");
     await expect(controller.switcher(lazy).apply("lazy-agent")).resolves.toMatchObject({ currentAccountId: account.id, status: "ready" });
     expect(mocks.execFile).toHaveBeenCalledWith("paseo", ["agent", "reload", "lazy-agent", "--json", "--host", "127.0.0.1:6767"], expect.anything(), expect.any(Function));
     expect(commands).toHaveBeenCalledTimes(1);
+  });
+
+  it("reloads with the daemon's own CLI and without the runtime switches of the plugin's process", async () => {
+    // An older desktop install linked `paseo` to the app executable, which ELECTRON_RUN_AS_NODE turns into plain Node.
+    const cli = "/Applications/Paseo.app/Contents/Resources/bin/paseo";
+    vi.stubEnv("PASEO_CLI", cli); vi.stubEnv("ELECTRON_RUN_AS_NODE", "1"); vi.stubEnv("PASEO_NODE_ENV", "production");
+    const { controller, account, lazy } = await lazyFixture("cli-agent");
+    await expect(controller.switcher(lazy).apply("cli-agent")).resolves.toMatchObject({ currentAccountId: account.id, status: "ready" });
+    expect(mocks.execFile).toHaveBeenCalledWith(cli, ["agent", "reload", "cli-agent", "--json", "--host", "127.0.0.1:6767"], expect.anything(), expect.any(Function));
+    const { env } = mocks.execFile.mock.calls.find(call => call[0] === cli)![2] as { env: NodeJS.ProcessEnv };
+    expect(env).not.toHaveProperty("ELECTRON_RUN_AS_NODE");
+    expect(env).not.toHaveProperty("PASEO_NODE_ENV");
+    expect(env).toMatchObject({ PATH: process.env.PATH, PASEO_CLI: cli });
+  });
+
+  it.each(["ENOENT", "EACCES"])("falls back to PATH when the CLI in PASEO_CLI cannot start (%s)", async code => {
+    // A daemon started from the app's terminal inherits the variable and can outlive the app it names.
+    const stale = "/Applications/Moved.app/Contents/Resources/bin/paseo";
+    vi.stubEnv("PASEO_CLI", stale);
+    mocks.execFile.mockImplementationOnce((...args: unknown[]) => {
+      (args.at(-1) as (error: Error) => void)(Object.assign(new Error(`spawn ${code}`), { code, stderr: "" }));
+    });
+    const { controller, account, lazy } = await lazyFixture("stale-agent");
+    await expect(controller.switcher(lazy).apply("stale-agent")).resolves.toMatchObject({ currentAccountId: account.id, status: "ready" });
+    expect(mocks.execFile.mock.calls.map(call => call[0])).toEqual([stale, "paseo"]);
+  });
+
+  it("runs no second CLI after the one in PASEO_CLI ran and failed", async () => {
+    const cli = "/Applications/Paseo.app/Contents/Resources/bin/paseo";
+    vi.stubEnv("PASEO_CLI", cli);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    mocks.execFile.mockImplementation((...args: unknown[]) => {
+      (args.at(-1) as (error: Error) => void)(Object.assign(new Error("Command failed"), { code: 1, signal: null, stderr: "refused" }));
+    });
+    const { controller, lazy } = await lazyFixture("refused-agent");
+    await expect(controller.switcher(lazy).apply("refused-agent")).rejects.toThrow(/^The native agent reload failed\./);
+    expect(new Set(mocks.execFile.mock.calls.map(call => call[0]))).toEqual(new Set([cli]));
+  });
+
+  it("reloads through the SDK on a host that has it, and starts no CLI", async () => {
+    vi.stubEnv("PASEO_CLI", "/nowhere/paseo");
+    const { controller, account, commands, lazy } = await lazyFixture("sdk-agent");
+    const reload = vi.fn(async () => null);
+    const handle = lazy.agents.ref("sdk-agent");
+    const withSdk = { agents: { ref: () => ({ ...handle, reload }) } } as unknown as PaseoApi;
+    await expect(controller.switcher(withSdk).apply("sdk-agent")).resolves.toMatchObject({ currentAccountId: account.id, status: "ready" });
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(commands).toHaveBeenCalledTimes(1);
+    expect(mocks.execFile.mock.calls.filter(call => (call[1] as string[]).includes("reload"))).toEqual([]);
+  });
+  it("keeps the cause of an SDK reload's failure in the plugin log and tries no CLI after it", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { controller, lazy } = await lazyFixture("sdk-broken");
+    const handle = lazy.agents.ref("sdk-broken");
+    const withSdk = { agents: { ref: () => ({ ...handle, reload: async () => { throw new Error("session at /private/path\nwould not open"); } }) } } as unknown as PaseoApi;
+    await expect(controller.switcher(withSdk).apply("sdk-broken")).rejects.toThrow(/^The native agent reload failed\. Check the agent status and try again\.$/);
+    expect(log).toHaveBeenCalledWith("Native reload of agent sdk-broken failed: session at /private/path would not open");
+    expect(mocks.execFile.mock.calls.filter(call => (call[1] as string[]).includes("reload"))).toEqual([]);
+  });
+  it("keeps the cause of a failed reload in the plugin log and out of the chat", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    mocks.execFile.mockImplementationOnce((...args: unknown[]) => {
+      const stderr = "node:internal/modules/cjs/loader:1575\n  throw err;\n  ^\n\n\u001b[31mError: Cannot find module '/agent'\u001b[39m\n";
+      (args.at(-1) as (error: Error) => void)(Object.assign(new Error("Command failed"), { code: 1, signal: null, stderr }));
+    });
+    const { controller, lazy } = await lazyFixture("broken-agent");
+    await expect(controller.switcher(lazy).apply("broken-agent")).rejects.toThrow(/^The native agent reload failed\. Check the agent status and try again\.$/);
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/broken-agent with paseo failed \(code 1\): .* Error: Cannot find module '\/agent'$/));
   });
 });

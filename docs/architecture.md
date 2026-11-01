@@ -2,7 +2,7 @@
 
 [Back to the README](../README.md)
 
-Account Switcher is an independent plugin for Paseo 0.11.x through 0.14.x, including beta releases after 0.11.0. It uses public plugin and provider APIs; no Paseo core patch is required. The development SDK is pinned to 0.11.4, the oldest supported release, so typechecking shows the plugin uses only the 0.11 API. The screen API and the usage source are 0.11 APIs, so every supported release has them. The plugin still checks for them at runtime, falling back to the older surface API or skipping the usage source; on a supported host these checks are defensive and change nothing.
+Account Switcher is an independent plugin for Paseo 0.11.0 and newer, including beta releases after 0.11.0. It uses public plugin and provider APIs; no Paseo core patch is required. The development SDK is pinned to 0.11.4, the oldest supported release, so typechecking shows the plugin uses only the 0.11 API. The screen API and the usage source are 0.11 APIs, so every supported release has them. The plugin still checks for them at runtime, falling back to the older surface API or skipping the usage source; on a supported host these checks are defensive and change nothing.
 
 ```mermaid
 flowchart LR
@@ -55,11 +55,21 @@ The launcher chooses the assigned profile and writes a startup receipt containin
 
 A new agent's binding stays unconfirmed (`currentAccountId` null) until a receipt check confirms its launch account: the receipt names that account and launch token, and the agent's session is `idle` or `running`. `controller.snapshot` runs the check for every binding as the app polls `accounts.list`; `controller.accountOf` runs it for one agent when failover or a switch note needs that agent's account, so an agent started with no app open (a schedule, a heartbeat, `paseo run`) is confirmed too. For failover the check also accepts an agent in `error`: Paseo sets that status when a turn fails, before `agent.turn_ended` fires, and the launcher wrote the receipt when it started the CLI, so the receipt still names the account the agent started on. The two status lists are passed to the shared check explicitly.
 
+Paseo reports no failed creation, so `reconcileDeletedAgents` treats a new agent's binding that never appeared as a creation under way until `creationOver` says otherwise. That takes two proofs. `CREATION_WAIT`, 10 minutes from `boundAt`, has passed, which covers the time until the CLI starts and reads the binding, because a CLI started after the binding is gone runs on the system login. And the launcher's receipt names no process that still runs, because a creation can hang with its CLI alive and using the profile; no receipt means no CLI started, and an unreadable one keeps the binding. A PID can pass to another process, after a reboot above all, so `receiptProcessRuns` does not count a process that started after the receipt was written. A binding from before `boundAt` existed starts its wait when first seen. A launcher that spent that long preparing the profile reads the registry again before it starts the CLI, and refuses if the binding is gone.
+
+Any binding then goes only when Paseo answers null for the agent itself. The agent list is not enough: it leaves out agents in background workspaces, among others. An error from that lookup keeps the binding.
+
 A provider default is assigned during interactive agent creation, unless the cached limits prove it would fail and the registry's per-provider `fallback` is on (the default; registries from 0.6 read as on). With `fallback` off, only the default is tried. The `agent.create` hook stores the requested model in a private environment variable; Paseo passes that environment to the same agent's first `agent.session_open`, which has the agent ID, binds the agent and removes the variable before the CLI starts.
+
+The creator can name the account instead, with `PASEO_ACCOUNT_SWITCHER_ACCOUNT` in the agent's environment (an account ID, or a name that exactly one account of the provider has). `bindRequested` probes only that account and binds it regardless of limits, or refuses the creation: no such account, `fallback` off with another account as the default, a sign-in in progress (both checked again inside the registry change), an official probe that is not `ready`, integration off for the provider, or a provider other than Claude and Codex. The hook removes the variable from every session open, so neither the CLI nor a later session sees it. A value in a provider's configured environment joins after the hook, so it selects nothing and does reach the CLI. A binding made this way is like any other afterwards; its creation note gives the reason `requested` when the account is not the default.
 
 ```mermaid
 flowchart TD
-  A[agent.session_open, reason create] --> B{default set?}
+  A[agent.session_open, reason create] --> R{account named<br/>at creation?}
+  R -- yes --> Q{fallback off,<br/>and not the default?}
+  Q -- yes --> X[refuse the creation]
+  Q -- no --> S[probe that account only] --> H
+  R -- no --> B{default set?}
   B -- no --> Z[no binding: the CLI's own sign-in]
   B -- yes --> C[launchOrder: cached limits + model]
   C --> D{default exhausted, or plan lacks the model?}
@@ -74,6 +84,8 @@ The choice and each applied switch are recorded as `account-note` plugin timelin
 
 Each limit window carries a `scope` from its parser: `account` for windows that stop every request (Claude `five_hour` and `seven_day`, Codex's main `rateLimits` bucket), `model` for a model's own limits, `spend` for extra paid usage. Exhausted means an account-scope window at 100% whose known reset time has not passed, which still holds for a stale reading because use within a window only grows until it resets; or a fresh Codex reading with `ordinaryUsageAllowed: false`. The plan's model list counts only from a fresh reading, and only for a model that at least one account lists. Room is the percent left in the tightest account-scope window still in effect. Only signed-in accounts without a sign-in in progress are spares. Its binding starts unconfirmed until startup is observed. Existing agents keep their bindings. Archived agents retain theirs for resume; cleanup of deleted agents requires a complete, successful agent listing.
 
+From Paseo 0.14 the controller reloads through the SDK's `agents.ref(id).reload()`, which sends the same request as the CLI. On older hosts it runs `paseo agent reload` with the CLI named in `PASEO_CLI`, or with `paseo` from PATH when that is unset or cannot start, and removes the variables Paseo removes before it starts an outside command. A failed reload's exit code and stderr go to `console.error`; only the refusal reaches the chat.
+
 Native reload preserves the native session ID, but does not offer an atomic idle-and-reload operation. Concurrent messages from another client remain a race that callers must avoid. Real switching, compaction, child sessions, and rewind require live acceptance beyond synthetic tests.
 
 ## Paseo usage and failover
@@ -87,6 +99,10 @@ Paseo's built-in usage sources find an agent's login from that session's launch 
 `server/session-env.ts` (`profileEnv`) gives the `agent.session_open` hook the same variable the launcher uses. For an agent whose binding names a managed account (`launchAccountId`, else `currentAccountId`) of the request's provider, with integration enabled for that provider, it returns `CLAUDE_CONFIG_DIR` or `CODEX_HOME` set to the account's home. The system account, an agent without a binding, and a provider without integration get nothing, because there the CLI runs on the login Paseo already reads. The value is derived on every session open, so a switch, which reloads the agent, moves it with the binding. A failed registry read is logged and costs only this hint. The hook still removes the private model hint.
 
 A managed home links the shared directories to the source home, so other reads of the variable by Paseo see the same settings and sessions.
+
+### The host's Check usage setting
+
+Paseo 0.15 adds a host setting that turns usage checks off, stored as `daemon.usage.enabled` in `config.json`. Paseo's own gate covers its usage requests but not this plugin's collector, so the collector reads the same value before each round and manual refresh. While it is off, the plugin requests nothing, keeps what it already read, and looks at no turn for failover, because an old reading is no proof that an account ran out. Only an explicit `false` counts, so a host without the setting stays on.
 
 ### Usage source
 

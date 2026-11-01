@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.10.0 - 2026-11-01
+
+### Added
+
+- The plugin follows the host's **Check usage** setting (Paseo 0.15 and newer). While it is off, the plugin makes no limit requests, does not offer a switch when a limit runs out, and Accounts says so.
+
+### Changed
+
+- Accepts every Paseo from 0.11.0 on, so a new Paseo release no longer needs a plugin release. Before, Paseo 0.15 refused to load the plugin.
+- On Paseo 0.14 and newer, a switch reloads the agent through Paseo's SDK instead of starting the `paseo` CLI. A stale `PASEO_CLI` or a `paseo` that does not start can no longer fail a switch there.
+
+## 0.9.0 - 2026-10-31
+
+### Added
+
+- A tool that creates agents can name the account a new Claude or Codex agent starts on, with `PASEO_ACCOUNT_SWITCHER_ACCOUNT` in the agent's environment set to the account's name or ID, for example `paseo run --env PASEO_ACCOUNT_SWITCHER_ACCOUNT=Work`. The named account is binding: the agent starts there whatever its limits, or the creation is refused with the reason, such as an unknown or ambiguous name, a sign-in in progress or not confirmed, **Always use the default** with another account as the default, account switching off for the provider, or a provider other than Claude and Codex. Given at creation, the variable never reaches the provider CLI, and the chat notes the start when the account is not the default. Switching later follows your settings as for any agent.
+
+### Fixed
+
+- An agent whose creation failed, for example because its CLI did not start, held its account for good: the account could not be removed or signed in again, even after a plugin reload. The next check now releases the account once 10 minutes have passed, no CLI of that launch still runs, and Paseo answers that the agent is gone. For an account held this way by an earlier release, the 10 minutes start when this version first checks it.
+- An agent in a background workspace lost its account the first time Accounts refreshed, because Paseo's agent list leaves such agents out: the account could then be removed while in use, and the agent's next CLI start ran on the system login. A binding now goes only when Paseo answers that the agent itself is gone.
+
+## 0.8.1 - 2026-10-30
+
+### Added
+
+- A banner for the README and the plugin directory, `docs/preview.png`, drawn from `docs/preview.svg`.
+
+### Fixed
+
+- Applying an account failed with *The native agent reload failed* when the `paseo` on the daemon's PATH was a link to the desktop app's executable, as older Paseo Desktop installs created: the plugin passed on its own `ELECTRON_RUN_AS_NODE`, so the app ran as plain Node. The reload now runs the CLI Paseo names in `PASEO_CLI`, the desktop app's bundled CLI, or `paseo` from PATH when that is unset or cannot start, without Paseo's runtime variables. The plugin log records why a reload failed.
+
 ## 0.8.0 - 2026-10-27
 
 ### Added

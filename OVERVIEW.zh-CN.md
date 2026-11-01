@@ -9,6 +9,7 @@ Account Switcher 让你在 Paseo 中使用多个 Claude 和 ChatGPT/Codex 订阅
 - 你添加的每个账号都有独立的凭据配置文件。设置、技能和会话历史仍与现有 CLI 配置共享，因此配置文件并不是沙箱。
 - 在 Accounts 中选择 **Enable**，会让 Paseo 的 Claude 和 Codex 命令指向插件的启动器，启动器以智能体所选账号运行官方 CLI。**Disable** 会恢复原始命令；移除插件前请先执行它。
 - 新智能体会使用其提供商的默认账号。如果最近读取的数据显示：默认账号已用尽某个账号级限制且重置时间尚未到来、Codex 报告不允许常规使用、其套餐不提供为该智能体选择的 Codex 模型，或默认账号需要重新登录，智能体会改用剩余百分比最多的已登录账号。单个模型的限制和额外付费用量不计入。所有账号都被排除时，仍使用默认账号。在 Accounts 中该提供商下选择 **Always use the default** 可关闭此行为，使默认账号始终生效。
+- 创建智能体的工具可以指定起始账号：创建时在智能体环境中设置 `PASEO_ACCOUNT_SWITCHER_ACCOUNT` 为账号名称或 ID，智能体就会在该账号上启动，不受限制影响。该账号无法使用，或已选择 **Always use the default** 而该账号不是默认账号时，不会创建智能体。
 - 在输入框中输入 `/account 名称` 可切换当前对话的账号，`/account default` 切换到提供商的默认账号：智能体空闲时立即生效，否则在切换器中通过 **Apply** 应用。命令中心（⌘K）为每个已登录账号提供 **Make “名称” the default**。
 - 对话中会有一行记录已应用的切换，以及新智能体未使用默认账号的原因。这些记录是尽力而为的，在守护进程重启后不会保留。
 - 已登录的账号也会显示在 Paseo 的 Usage 视图中；使用托管账号的智能体，其 Paseo 用量弹窗会显示该账号。
@@ -17,7 +18,7 @@ Account Switcher 让你在 Paseo 中使用多个 Claude 和 ChatGPT/Codex 订阅
 
 ## 设置
 
-- macOS 或 Linux 守护进程上的 Paseo 0.11 至 0.14，以及 Node.js 22.12 或更高版本。
+- macOS 或 Linux 守护进程上的 Paseo 0.11 或更高版本，以及 Node.js 22.12 或更高版本。
 - 守护进程上需要官方 Paseo CLI，以及 Claude Code 或 Codex 至少其一。缺少 CLI 的提供商会显示为不可用；安装后重新加载插件，并在该提供商的分区中选择 **Enable**。
 - 每个账号都需要 Claude 或 ChatGPT 订阅。不支持 API 密钥。添加账号时，会在 Paseo 中运行官方 CLI 登录流程。
 
@@ -27,7 +28,7 @@ Account Switcher 让你在 Paseo 中使用多个 Claude 和 ChatGPT/Codex 订阅
 - Claude 限制来自使用该账号访问令牌向 `api.anthropic.com` 发出的请求。当该令牌过期时（例如账号闲置），插件会以该账号运行 `claude -p /usage --no-session-persistence --setting-sources user`，由官方 CLI 续期令牌，每 10 分钟最多一次。该命令不发送模型消息，也不保存会话。Codex 限制和套餐的模型列表来自官方 `codex app-server`，它会向 OpenAI 查询，并可能刷新账号令牌。限制检查不会发送任何模型消息。
 - 为在 Paseo 的 Usage 视图中列出账号，插件会以来源名称 Account Switcher 上报它已收集的限制数据，不会产生新的提供商请求。对于使用托管账号的智能体，插件会把该账号的配置文件目录加入智能体的会话环境，使 Paseo 的用量弹窗读取正确的账号。
 - 插件发给智能体的唯一消息是 **Continue.**，仅在通过限制行完成切换之后，或在失败回合之后自动切换完成时发送。
-- 限制每 5 分钟刷新一次；Accounts 或切换器打开时每分钟刷新一次。缺失的值显示为无数据，刷新失败时可能保留上次的值并标记为过期。
+- 限制每 5 分钟刷新一次；Accounts 或切换器打开时每分钟刷新一次。缺失的值显示为无数据，刷新失败时可能保留上次的值并标记为过期。在主机设置中关闭 **Check usage** 时（Paseo 0.15 及更新版本），插件不发起额度请求，额度用尽时也不提供切换；Accounts 页面会说明这一点。
 - 移除托管账号会删除其配置文件和已保存的登录信息，在 macOS 上包括 Claude 账号的钥匙串项。共享的会话历史会保留。
 
 ## 限制

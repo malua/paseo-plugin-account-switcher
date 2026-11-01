@@ -13,6 +13,8 @@ import type { AccountNote } from "./shared/timeline";
 
 // Paseo hands `agent.create`'s environment to the same agent's first `agent.session_open`, which alone knows the agent ID.
 const MODEL_ENV="PASEO_ACCOUNT_SWITCHER_MODEL";
+// Set by whoever creates the agent (e.g. `paseo run --env PASEO_ACCOUNT_SWITCHER_ACCOUNT=Work`): the account it starts on.
+const ACCOUNT_ENV="PASEO_ACCOUNT_SWITCHER_ACCOUNT";
 // The prompt that resumes an agent's work on the account it was switched to.
 const CONTINUE="Continue.";
 const reason=(error:unknown)=>error instanceof Error?error.message:String(error);
@@ -124,8 +126,8 @@ export default function contribute(server:PluginServerContext){
   return{};
  });
  server.handle(rpc.setIntegration,({enabled},{paseo})=>controller.integration(paseo,enabled));
- server.handle(rpc.listUsage,async({visible},{paseo})=>{await controller.ensureRuntime(paseo);return{accounts:await controller.usage.list({visible})};});
- server.handle(rpc.refreshUsage,async({accountId},{paseo})=>{await controller.ensureRuntime(paseo);return{accounts:await controller.usage.refresh(accountId)};});
+ server.handle(rpc.listUsage,async({visible},{paseo})=>{await controller.ensureRuntime(paseo);return{accounts:await controller.usage.list({visible}),checksOff:!await controller.usage.checksEnabled()};});
+ server.handle(rpc.refreshUsage,async({accountId},{paseo})=>{await controller.ensureRuntime(paseo);return{accounts:await controller.usage.refresh(accountId),checksOff:!await controller.usage.checksEnabled()};});
  // Paseo's Usage view lists the managed accounts too; a daemon before 0.11 has no usage sources, and the Accounts screen still shows the same limits.
  registerPaseoUsage(server,controller);
  const removeCreate=server.before("agent.create",({request})=>{
@@ -135,8 +137,11 @@ export default function contribute(server:PluginServerContext){
  });
  const removeHook=server.before("agent.session_open",async({request},{paseo})=>{
   await controller.ready;
-  const {[MODEL_ENV]:model,...env}=request.env;
-  if(request.purpose==="interactive"&&request.reason==="create"&&(request.provider==="claude"||request.provider==="codex")){await controller.ensureRuntime(paseo);const bound=await controller.switcher(paseo).bindNewAgent(request.agentId,request.provider,model||null);
+  // Neither hint from the creation reaches the CLI, on this or any later session of the agent.
+  const {[MODEL_ENV]:model,[ACCOUNT_ENV]:account,...env}=request.env;
+  const creating=request.purpose==="interactive"&&request.reason==="create",requested=account?.trim()||null;
+  if(creating&&requested&&request.provider!=="claude"&&request.provider!=="codex")throw new SwitchRefusal(`Account Switcher manages only Claude Code and Codex accounts, so the ${request.provider} agent cannot start on ${requested}.`);
+  if(creating&&(request.provider==="claude"||request.provider==="codex")){await controller.ensureRuntime(paseo);const bound=await controller.switcher(paseo).bindNewAgent(request.agentId,request.provider,model||null,requested);
    const reason=bound?.reason;
    if(bound&&reason){
     const started=await note(request.agentId,async()=>{const state=await controller.store.read(),to=labelOf(state,bound.accountId);return to?{kind:"started",from:labelOf(state,bound.defaultId),to,reason}:null;});
@@ -175,6 +180,8 @@ export default function contribute(server:PluginServerContext){
    const state=await controller.store.read();
    // Without that provider's launcher the CLI runs on the system login, so a switch could not take effect.
    if(!state.integration.enabled||!state.integration.providers.includes(provider)||settled(state))return;
+   // With the host's usage checks off nothing can read the account again, and an old reading is no proof that it ran out.
+   if(!await controller.usage.checksEnabled())return;
    // An agent started with no app open may have a launch nothing has confirmed yet; its receipt confirms it now.
    const fromId=await controller.accountOf(paseo,agent.id,provider,state),from=labelOf(state,fromId);
    if(!fromId||!from)return;

@@ -7,6 +7,7 @@ Limits cover every window the provider reports, such as 5-hour and weekly use, w
 - Each account you add gets its own credential profile. Settings, skills, and session history stay shared with your existing CLI setup, so a profile is not a sandbox.
 - **Enable** in Accounts points Paseo's Claude and Codex commands at the plugin's launchers, which start the official CLI under the agent's account. **Disable** restores the original commands; use it before removing the plugin.
 - A new agent starts on its provider's default account. When the latest readings show the default has used up an account-wide limit that resets later, Codex reports that ordinary usage is not allowed, its plan lacks the Codex model chosen for the agent, or the default needs sign-in, the agent starts on the signed-in account with the largest percentage left instead. Limits of a single model and extra paid usage do not count. With every account ruled out, it stays on the default. **Always use the default** under a provider in Accounts turns this off, so the default stays binding.
+- A tool that creates agents can name the account to start on: an agent created with `PASEO_ACCOUNT_SWITCHER_ACCOUNT` in its environment, set to an account's name or ID, starts on that account whatever its limits. It is not created when that account cannot be used, or when **Always use the default** is on and that account is not the default.
 - `/account name` in the message field switches the chat's account, or `/account default` its provider's default: at once when the agent is idle, otherwise in the switcher for **Apply**. The Command Center offers **Make “name” the default** for each signed-in account.
 - A line in the chat records applied switches, and why a new agent did not start on the default. These lines are best effort and do not survive a daemon restart.
 - Signed-in accounts also appear in Paseo's Usage view, and Paseo's usage popover for an agent on a managed account shows that account.
@@ -15,7 +16,7 @@ Limits cover every window the provider reports, such as 5-hour and weekly use, w
 
 ## Setup
 
-- Paseo 0.11 to 0.14 on a macOS or Linux daemon, with Node.js 22.12 or newer.
+- Paseo 0.11 or newer on a macOS or Linux daemon, with Node.js 22.12 or newer.
 - The official Paseo CLI and at least one of Claude Code or Codex on the daemon. A provider without its CLI shows as unavailable; after you install it, reload the plugin and select **Enable** in that provider's section.
 - A Claude or ChatGPT subscription for each account. API keys are not supported. Adding an account runs the official CLI sign-in from Paseo.
 
@@ -25,7 +26,7 @@ Limits cover every window the provider reports, such as 5-hour and weekly use, w
 - Claude limits come from a request to `api.anthropic.com` with the account's access token. When that token has expired, for example on an idle account, the plugin runs `claude -p /usage --no-session-persistence --setting-sources user` under the account so the official CLI renews it, at most every 10 minutes. The command sends no model message and saves no session. Codex limits and the plan's model list come from the official `codex app-server`, which asks OpenAI and may refresh the account's token. Limit checks send no model messages.
 - To list accounts in Paseo's Usage view, the plugin reports the limits it has already collected under the source name Account Switcher, without new provider requests. For an agent on a managed account, it adds that account's profile directory to the agent's session environment so Paseo's usage popover reads the right account.
 - The only message the plugin sends to an agent is **Continue.**, after a switch made from the limit row, or by automatic switching after a failed turn.
-- Limits refresh every 5 minutes, and every minute while Accounts or the switcher is open. Missing values show as no data, and a failed refresh can keep the last values, marked stale.
+- Limits refresh every 5 minutes, and every minute while Accounts or the switcher is open. Missing values show as no data, and a failed refresh can keep the last values, marked stale. With **Check usage** off in the host's settings (Paseo 0.15 and newer), the plugin makes no limit requests and offers no switch when a limit runs out; Accounts says so.
 - Removing a managed account deletes its profile and stored sign-in, including a Claude account's Keychain item on macOS. Shared session history stays.
 
 ## Limitations
