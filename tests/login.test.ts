@@ -174,3 +174,17 @@ it("recovers an interrupted background reservation only after its matching watch
  await f.controller.cancelLogin(f.paseo,f.account.id,"interrupted-session");
  expect((await f.controller.store.read()).accounts.find(a=>a.id===f.account.id)).toMatchObject({loginToken:null,login:null});
 });
+
+it("lets a signed-out account sign in again while idle agents are still bound to it",async()=>{
+ const f=await controllerFixture();
+ await f.controller.store.change(state=>{state.bindings.push({agentId:"idle-agent",provider:"codex",currentAccountId:f.account.id,pendingAccountId:null,status:"ready",error:null,launchAccountId:f.account.id,launchToken:null,registrationObserved:true});});
+ const session=await f.controller.startLogin(f.paseo,f.account.id);
+ expect((await f.controller.store.read()).accounts.find(a=>a.id===f.account.id)).toMatchObject({loginToken:session.id});
+});
+
+it("shows the real reason, with the agent count, when bound agents still block sign-in",async()=>{
+ const f=await controllerFixture();
+ await f.controller.store.change(state=>{state.bindings.push({agentId:"switching-agent",provider:"codex",currentAccountId:f.account.id,pendingAccountId:null,status:"switching",error:null,launchAccountId:f.account.id,launchToken:"t",registrationObserved:true});});
+ await expect(f.controller.startLogin(f.paseo,f.account.id)).rejects.toThrow(/Switch agents away from this account before signing in again \(1 bound\)/);
+ expect((await f.controller.store.read()).accounts.find(a=>a.id===f.account.id)?.loginToken).toBeNull();
+});

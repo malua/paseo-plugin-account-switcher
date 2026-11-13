@@ -48,6 +48,7 @@ export class LoginSessions {
       userCode: null, canSubmitCode: false, error: null, expiresAt: new Date(Date.now() + duration).toISOString() },
       buffer: "", nativeSuccess: false, stopped: false, pendingCompletions: [] };
     this.entries.set(account.id, entry);
+    let launchRefusal: unknown;
     const env = { ...accountEnvironment(account, registry), BROWSER: "/usr/bin/true", NO_COLOR: "1", TERM: "dumb" };
     try {
       entry.process = (this.dependencies.createProcess ?? createLoginProcess)({ command,
@@ -71,7 +72,7 @@ export class LoginSessions {
       // Establish the crash watchdog before persisting a login reservation. The
       // native CLI cannot start until that reservation has been committed.
       await entry.process.ready();
-      await beforeLaunch?.();
+      try { await beforeLaunch?.(); } catch (error) { launchRefusal = error; throw error; }
       if (entry.stopped || this.disposed) throw new Error("Sign-in stopped before launch.");
       entry.process.start();
       entry.timer = setTimeout(() => { void this.fail(entry, "Sign-in expired. Start sign-in again."); }, duration);
@@ -84,6 +85,8 @@ export class LoginSessions {
       clearTimeout(entry.timer);
       if (entry.process) await entry.process.stop();
       this.entries.delete(account.id);
+      // Surface the controller's own refusal (e.g. agents still bound); only process start failures get the generic message.
+      if (launchRefusal instanceof Error) throw launchRefusal;
       throw new Error("Could not start account sign-in. Check the provider CLI and try again.");
     }
   }

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A signed-out account can sign in again while idle, closed or archived agents are still bound to it; they pick up the new credentials. Agents that may still be launching or switching continue to block sign-in.
+- When sign-in is refused because agents are still bound to the account, the dialog now shows the real reason and how many agents are bound, instead of "Check the provider CLI".
+
 ## 0.10.2 - 2026-11-07
 
 ### Fixed

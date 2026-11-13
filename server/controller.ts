@@ -17,6 +17,17 @@ import { LoginSessions, type LoginDependencies } from "./login";
 import { receiptProcessRuns } from "./process-identity";
 
 const execFileAsync=promisify(execFile);
+// A signed-out account cannot run its agents, so settled bindings (idle, closed or archived agents on this account) do not block signing in again:
+// they pick up the new credentials. Only bindings that may still be launching or switching, or whose account is unknown, hold the account.
+function assertNoAgentsBlockSignIn(state:Registry,account:StoredAccount){
+ const id=account.id,signedOut=account.authStatus==="needs_auth";
+ const holders=state.bindings.filter(b=>{
+  if(!(b.currentAccountId===id||b.launchAccountId===id||b.currentAccountId===null&&b.pendingAccountId===id))return false;
+  const settled=b.currentAccountId===id&&b.status!=="switching"&&(b.pendingAccountId===null||b.pendingAccountId===id)&&(b.launchAccountId===null||b.launchAccountId===id);
+  return !(signedOut&&settled);
+ });
+ if(holders.length)throw new Error(`Switch agents away from this account before signing in again (${holders.length} bound).`);
+}
 // Paseo sets these for its own Node processes, this plugin's included, and removes them before it starts an outside
 // command. Inherited, ELECTRON_RUN_AS_NODE makes an Electron executable, such as a `paseo` link to the desktop app's
 // executable left by an older install, run as plain Node, which then fails to load "agent" as a script.
@@ -226,7 +237,7 @@ export class AccountController {
   await this.reconcileDeletedAgents(paseo);
   if(this.startingLogins.has(id))throw new Error("Sign-in is already being prepared.");
   const token=randomUUID();
-  await this.store.change(state=>{const account=accountFrom(state,id);if(account.source!=="managed")throw new Error("Add a separate account for isolated sign-in.");if(account.loginToken)throw new Error("Sign-in is already open. Continue in the Paseo terminal.");if(state.bindings.some(b=>b.currentAccountId===id||b.launchAccountId===id||b.currentAccountId===null&&b.pendingAccountId===id))throw new Error("Switch agents away from this account before signing in again.");account.loginToken=token;account.login=null;});
+  await this.store.change(state=>{const account=accountFrom(state,id);if(account.source!=="managed")throw new Error("Add a separate account for isolated sign-in.");if(account.loginToken)throw new Error("Sign-in is already open. Continue in the Paseo terminal.");assertNoAgentsBlockSignIn(state,account);account.loginToken=token;account.login=null;});
   this.usage.invalidate(id);
   this.startingLogins.add(id);
   try{
@@ -251,7 +262,7 @@ export class AccountController {
    if(account.loginToken)throw new Error("Sign-in is already open. Continue or cancel the current attempt.");
    if(account.source!=="managed")throw new Error("Add a separate account for isolated sign-in.");
    return await this.logins.start(account,registry,this.store.root,token,mode,async()=>{
-    await this.store.change(state=>{const current=accountFrom(state,id);if(current.loginToken)throw new Error("Sign-in is already open. Continue or cancel the current attempt.");if(state.bindings.some(b=>b.currentAccountId===id||b.launchAccountId===id||b.currentAccountId===null&&b.pendingAccountId===id))throw new Error("Switch agents away from this account before signing in again.");current.loginToken=token;current.login={sessionId:token,mode:account.provider==="claude"?"browser":mode};});
+    await this.store.change(state=>{const current=accountFrom(state,id);if(current.loginToken)throw new Error("Sign-in is already open. Continue or cancel the current attempt.");assertNoAgentsBlockSignIn(state,current);current.loginToken=token;current.login={sessionId:token,mode:account.provider==="claude"?"browser":mode};});
     this.usage.invalidate(id);
     await this.checks.get(id)?.catch(()=>{});
    });
