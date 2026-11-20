@@ -13,7 +13,7 @@ import { installIntegration, restoreIntegration, writeLaunchers, prepareRuntime,
 import { SwitchRefusal, SwitchService } from "./switching";
 import { createUsageService, readCredentialVersion, usageChecksEnabled, type AccountReadOptions, type QuotaAccount } from "./usage";
 import { renewExpiredClaudeToken } from "./usage/claude";
-import { LoginSessions, type LoginDependencies } from "./login";
+import { LoginRefusal, LoginSessions, type LoginDependencies } from "./login";
 import { receiptProcessRuns } from "./process-identity";
 
 const execFileAsync=promisify(execFile);
@@ -26,7 +26,7 @@ function assertNoAgentsBlockSignIn(state:Registry,account:StoredAccount){
   const settled=b.currentAccountId===id&&b.status!=="switching"&&(b.pendingAccountId===null||b.pendingAccountId===id)&&(b.launchAccountId===null||b.launchAccountId===id);
   return !(signedOut&&settled);
  });
- if(holders.length)throw new Error(`Switch agents away from this account before signing in again (${holders.length} bound).`);
+ if(holders.length)throw new LoginRefusal(`Switch agents away from this account before signing in again (${holders.length} bound).`);
 }
 // Paseo sets these for its own Node processes, this plugin's included, and removes them before it starts an outside
 // command. Inherited, ELECTRON_RUN_AS_NODE makes an Electron executable, such as a `paseo` link to the desktop app's
@@ -262,7 +262,7 @@ export class AccountController {
    if(account.loginToken)throw new Error("Sign-in is already open. Continue or cancel the current attempt.");
    if(account.source!=="managed")throw new Error("Add a separate account for isolated sign-in.");
    return await this.logins.start(account,registry,this.store.root,token,mode,async()=>{
-    await this.store.change(state=>{const current=accountFrom(state,id);if(current.loginToken)throw new Error("Sign-in is already open. Continue or cancel the current attempt.");assertNoAgentsBlockSignIn(state,current);current.loginToken=token;current.login={sessionId:token,mode:account.provider==="claude"?"browser":mode};});
+    await this.store.change(state=>{const current=accountFrom(state,id);if(current.loginToken)throw new LoginRefusal("Sign-in is already open. Continue or cancel the current attempt.");assertNoAgentsBlockSignIn(state,current);current.loginToken=token;current.login={sessionId:token,mode:account.provider==="claude"?"browser":mode};});
     this.usage.invalidate(id);
     await this.checks.get(id)?.catch(()=>{});
    });

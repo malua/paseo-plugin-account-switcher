@@ -29,6 +29,10 @@ function loginUrl(value: unknown, provider: "claude" | "codex", mode?: "device" 
   } catch { return null; }
 }
 
+/** A sign-in refused for a reason written for the user: the dialog shows its message. Any other failure may carry paths
+ * or CLI output, so the dialog gets a generic message instead. */
+export class LoginRefusal extends Error { override readonly name = "LoginRefusal"; }
+
 export class LoginSessions {
   private readonly entries = new Map<string, Entry>();
   private disposed = false;
@@ -48,7 +52,6 @@ export class LoginSessions {
       userCode: null, canSubmitCode: false, error: null, expiresAt: new Date(Date.now() + duration).toISOString() },
       buffer: "", nativeSuccess: false, stopped: false, pendingCompletions: [] };
     this.entries.set(account.id, entry);
-    let launchRefusal: unknown;
     const env = { ...accountEnvironment(account, registry), BROWSER: "/usr/bin/true", NO_COLOR: "1", TERM: "dumb" };
     try {
       entry.process = (this.dependencies.createProcess ?? createLoginProcess)({ command,
@@ -72,7 +75,7 @@ export class LoginSessions {
       // Establish the crash watchdog before persisting a login reservation. The
       // native CLI cannot start until that reservation has been committed.
       await entry.process.ready();
-      try { await beforeLaunch?.(); } catch (error) { launchRefusal = error; throw error; }
+      await beforeLaunch?.();
       if (entry.stopped || this.disposed) throw new Error("Sign-in stopped before launch.");
       entry.process.start();
       entry.timer = setTimeout(() => { void this.fail(entry, "Sign-in expired. Start sign-in again."); }, duration);
@@ -81,12 +84,12 @@ export class LoginSessions {
         clientInfo: { name: "paseo_account_switcher", title: "Paseo Account Switcher", version: "0.1.0" }, capabilities: null,
       } }) + "\n");
       return structuredClone(entry.value);
-    } catch {
+    } catch (error) {
       clearTimeout(entry.timer);
       if (entry.process) await entry.process.stop();
       this.entries.delete(account.id);
-      // Surface the controller's own refusal (e.g. agents still bound); only process start failures get the generic message.
-      if (launchRefusal instanceof Error) throw launchRefusal;
+      // A refusal from `beforeLaunch` names the real reason, such as agents still on the account (#55).
+      if (error instanceof LoginRefusal) throw error;
       throw new Error("Could not start account sign-in. Check the provider CLI and try again.");
     }
   }

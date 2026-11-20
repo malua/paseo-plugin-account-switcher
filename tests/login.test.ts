@@ -128,6 +128,18 @@ it("reserves before native launch, keeps URLs out of registry, and clears state 
  expect(boundaries.probe).toHaveBeenCalled();
 });
 
+it("says why a sign-in is refused while agents use the account, instead of blaming the CLI (#55)",async()=>{
+ const f=await controllerFixture();
+ // An agent that runs on the account. The account is signed in: a signed-out one lets idle agents re-sign-in (fork #55).
+ await f.controller.store.prepare("agent-on-it","codex",f.account.id);
+ await f.controller.store.change(state=>{const binding=state.bindings.find(b=>b.agentId==="agent-on-it")!;binding.currentAccountId=f.account.id;binding.launchAccountId=f.account.id;binding.pendingAccountId=null;state.accounts.find(a=>a.id===f.account.id)!.authStatus="ready";});
+ await expect(f.controller.startLogin(f.paseo,f.account.id)).rejects.toThrow(/^Switch agents away from this account before signing in again \(1 bound\)\.$/);
+ expect(f.fake.start).not.toHaveBeenCalled();
+ // Nothing was reserved, so nothing waits to be cleared.
+ const account=(await f.controller.store.read()).accounts.find(a=>a.id===f.account.id)!;
+ expect(account.loginToken).toBeNull();expect(account.login??null).toBeNull();
+});
+
 it("preserves the login reservation if shutdown cannot be confirmed during startup",async()=>{
  const f=await controllerFixture();f.fake.write.mockImplementation(()=>{throw new Error("fixture startup failure");});f.fake.stop.mockRejectedValue(new Error("fixture shutdown unconfirmed"));
  await expect(f.controller.startLogin(f.paseo,f.account.id)).rejects.toThrow();
