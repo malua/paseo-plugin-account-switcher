@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 - 2026-11-24
+
+### Added
+
+- Choose the account for a CLI import using the `account-switcher.account` label (#53).
 
 ### Fixed
 
